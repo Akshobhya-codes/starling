@@ -1,0 +1,21 @@
+{
+  "imageHash": "9e3b5534a29cad55eb4480cae2ab82bb2d0783c2205cd54ad5bc125ba002ac7f",
+  "cameraId": "tv303us101s101atsvannessav",
+  "cameraName": "US-101 : S Van Ness",
+  "frameCapturedAt": "2026-03-12T07:54:58.752Z",
+  "overlay": {
+    "bbox": [
+      72,
+      65,
+      78,
+      71
+    ],
+    "circle": {
+      "cx": 68.13,
+      "cy": 75,
+      "radius": 8.08
+    },
+    "label": "BOLO MATCH",
+    "confidence": 0.85
+  }
+}

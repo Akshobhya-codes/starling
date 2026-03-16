@@ -1,0 +1,21 @@
+{
+  "imageHash": "b8ae1003f5d17bc476fe12ccecc6d5e1b2b2d67cbcae025b05adb5859c447fd8",
+  "cameraId": "tv305us101justnorthofcandlestickpark",
+  "cameraName": "US-101 : N of Candlestick",
+  "frameCapturedAt": "2026-03-13T00:27:39.565Z",
+  "overlay": {
+    "bbox": [
+      61,
+      48,
+      68,
+      56
+    ],
+    "circle": {
+      "cx": 52.19,
+      "cy": 64.62,
+      "radius": 5.77
+    },
+    "label": "BOLO MATCH",
+    "confidence": 0.88
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "imageHash": "07b3e1c611eb7c2820fcdea7c150b7d12101da155e4b6092adb860b8b1fe8cff",
+  "cameraId": "tvd01i80fremont",
+  "cameraName": "I-80 : Fremont",
+  "frameCapturedAt": "2026-03-12T20:40:25.736Z",
+  "overlay": {
+    "bbox": [
+      36.8,
+      17.2,
+      43.1,
+      23
+    ],
+    "circle": {
+      "cx": 20.16,
+      "cy": 40,
+      "radius": 4.62
+    },
+    "label": "BOLO MATCH",
+    "confidence": 0.85
+  }
+}

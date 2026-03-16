@@ -1,0 +1,21 @@
+{
+  "imageHash": "d90b364b15bfdfa72421bdda57f7ffdcb0ed8228f6643be6cdff4d50c5a97728",
+  "cameraId": "tvr42i580lowerdeckpier59",
+  "cameraName": "TVR42 : I-580 : Lower Deck Pier 59",
+  "frameCapturedAt": "2026-03-13T00:27:46.105Z",
+  "overlay": {
+    "bbox": [
+      79,
+      79,
+      87,
+      85
+    ],
+    "circle": {
+      "cx": 82.03,
+      "cy": 82.88,
+      "radius": 4.62
+    },
+    "label": "BOLO MATCH",
+    "confidence": 0.85
+  }
+}

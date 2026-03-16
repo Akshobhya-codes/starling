@@ -1,0 +1,21 @@
+{
+  "imageHash": "09e9d1e1d90d8eb5451f5193778747da27f92de01e3ee82e612aa6d455125c8c",
+  "cameraId": "tve73us101spenceravenue",
+  "cameraName": "US-101 : Spencer Ave",
+  "frameCapturedAt": "2026-03-13T01:15:40.310Z",
+  "overlay": {
+    "bbox": [
+      32.3,
+      46.1,
+      33.8,
+      47.4
+    ],
+    "circle": {
+      "cx": 46.88,
+      "cy": 33.08,
+      "radius": 4.62
+    },
+    "label": "BOLO MATCH",
+    "confidence": 0.75
+  }
+}

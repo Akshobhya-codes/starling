@@ -1,0 +1,21 @@
+{
+  "imageHash": "3a9d11552d030b13626c613bd60be33445b3c20f3e564e23551b5418e7c13c66",
+  "cameraId": "tv316i806thstreet",
+  "cameraName": "I-80 : 6th Street",
+  "frameCapturedAt": "2026-03-13T01:15:35.153Z",
+  "overlay": {
+    "bbox": [
+      71,
+      86,
+      76,
+      91
+    ],
+    "circle": {
+      "cx": 88.44,
+      "cy": 73.65,
+      "radius": 4.62
+    },
+    "label": "BOLO MATCH",
+    "confidence": 0.8
+  }
+}

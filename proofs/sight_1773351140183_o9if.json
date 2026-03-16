@@ -1,0 +1,21 @@
+{
+  "imageHash": "d2a9b7a2a24b4c247aa493f07120921fc4949ef20aca1bf50ed6c8ea26f9fb08",
+  "cameraId": "tv310us101atfaithstpoc",
+  "cameraName": "US-101 : Faith St POC",
+  "frameCapturedAt": "2026-03-13T01:19:23.015Z",
+  "overlay": {
+    "bbox": [
+      83.5,
+      25.4,
+      91.2,
+      32.5
+    ],
+    "circle": {
+      "cx": 28.91,
+      "cy": 87.31,
+      "radius": 5
+    },
+    "label": "BOLO MATCH",
+    "confidence": 0.88
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "imageHash": "1a0f92ed1109f793d54e705969f42059c51c9f506fbe454437fcbcbfb9c0a101",
+  "cameraId": "tv380us101at280split",
+  "cameraName": "US-101 : 280 Split",
+  "frameCapturedAt": "2026-03-13T00:27:26.980Z",
+  "overlay": {
+    "bbox": [
+      73.5,
+      10.3,
+      76.5,
+      13.3
+    ],
+    "circle": {
+      "cx": 11.88,
+      "cy": 75,
+      "radius": 4.62
+    },
+    "label": "BOLO MATCH",
+    "confidence": 0.75
+  }
+}

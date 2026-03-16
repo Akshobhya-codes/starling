@@ -1,0 +1,21 @@
+{
+  "imageHash": "0d1ca434644edbe9099525920d2abacb21eab1154773ad49c69cb28fcf05465f",
+  "cameraId": "tv313us101at23rdst",
+  "cameraName": "US-101 : 23rd St",
+  "frameCapturedAt": "2026-03-13T00:27:49.781Z",
+  "overlay": {
+    "bbox": [
+      65.4,
+      4.5,
+      73.5,
+      12.5
+    ],
+    "circle": {
+      "cx": 8.44,
+      "cy": 69.42,
+      "radius": 5.77
+    },
+    "label": "BOLO MATCH",
+    "confidence": 0.85
+  }
+}

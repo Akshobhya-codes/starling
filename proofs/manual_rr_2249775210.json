@@ -1,0 +1,21 @@
+{
+  "imageHash": "463aa98940a99a288fdfcaf0d0fed885459951edbc08d4c57164aab8765c2557",
+  "cameraId": "manual",
+  "cameraName": "NPR Getty Image",
+  "frameCapturedAt": "2026-03-12T06:53:40.378Z",
+  "overlay": {
+    "bbox": [
+      60,
+      43,
+      86,
+      58
+    ],
+    "circle": {
+      "cx": 50.49,
+      "cy": 73.02,
+      "radius": 7.94
+    },
+    "label": "RANGE ROVER",
+    "confidence": 0.62
+  }
+}

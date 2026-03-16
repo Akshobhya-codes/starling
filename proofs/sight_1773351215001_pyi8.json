@@ -1,0 +1,21 @@
+{
+  "imageHash": "5de795881d3a5ae46d5e4e8704c257f752747360961dd37d94cc0f00f6b5a940",
+  "cameraId": "tv322i280us101",
+  "cameraName": "I-280 : US-101",
+  "frameCapturedAt": "2026-03-13T00:28:40.946Z",
+  "overlay": {
+    "bbox": [
+      45.8,
+      26.8,
+      49.6,
+      31.7
+    ],
+    "circle": {
+      "cx": 29.38,
+      "cy": 47.69,
+      "radius": 4.62
+    },
+    "label": "BOLO MATCH",
+    "confidence": 0.85
+  }
+}

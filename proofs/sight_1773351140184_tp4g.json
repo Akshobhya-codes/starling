@@ -1,0 +1,21 @@
+{
+  "imageHash": "7ea1db1c6324c43693b6d06bd34b1bc872cebee90f62838b1ee37d0697e0a077",
+  "cameraId": "tv304i80us101",
+  "cameraName": "I-80 : US-101",
+  "frameCapturedAt": "2026-03-12T21:32:44.676Z",
+  "overlay": {
+    "bbox": [
+      36.5,
+      72.1,
+      43.2,
+      79.4
+    ],
+    "circle": {
+      "cx": 75.78,
+      "cy": 39.81,
+      "radius": 5
+    },
+    "label": "BOLO MATCH",
+    "confidence": 0.85
+  }
+}

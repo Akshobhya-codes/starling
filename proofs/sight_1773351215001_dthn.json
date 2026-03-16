@@ -1,0 +1,21 @@
+{
+  "imageHash": "cc8d7a51dcdb0ea092250d9967c022abe17e85c23e0235f2ba4b74d08969b09b",
+  "cameraId": "tv406us101atairportbl",
+  "cameraName": "US-101 : Airport Bl (SFO)",
+  "frameCapturedAt": "2026-03-13T00:28:36.265Z",
+  "overlay": {
+    "bbox": [
+      52.5,
+      42.1,
+      56.4,
+      46.2
+    ],
+    "circle": {
+      "cx": 44.22,
+      "cy": 54.62,
+      "radius": 4.62
+    },
+    "label": "BOLO MATCH",
+    "confidence": 0.85
+  }
+}
