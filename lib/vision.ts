@@ -2,22 +2,29 @@ import OpenAI from "openai";
 import sharp from "sharp";
 import { CameraAnalysis, Bolo, VehicleAttributes } from "./types";
 
-// ── NVIDIA Nemotron (primary) via OpenAI-compatible NIM API ──
-type VisionProvider = "nemotron" | "gemini";
+// ── Vision providers: Groq (primary), Gemini (fallback), Nemotron (fallback) ──
+type VisionProvider = "groq" | "gemini" | "nemotron";
 
 const NVIDIA_API_BASE = "https://integrate.api.nvidia.com/v1";
 const NEMOTRON_VISION_MODEL = process.env.NEMOTRON_VISION_MODEL || "nvidia/llama-3.2-nv-vision-instruct";
 const GEMINI_MODEL_VISION = process.env.VISION_MODEL_GEMINI || "gemini-2.5-flash";
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
+const GROQ_VISION_MODEL = process.env.GROQ_VISION_MODEL || "llama-3.2-90b-vision-preview";
 
 const nvidiaClient = new OpenAI({
   baseURL: NVIDIA_API_BASE,
   apiKey: process.env.NVIDIA_API_KEY || "",
 });
 
+const groqClient = new OpenAI({
+  baseURL: "https://api.groq.com/openai/v1",
+  apiKey: process.env.GROQ_API_KEY || "",
+});
+
 const VISION_MIN_INTERVAL_MS = 700;
 const RATE_LIMIT_BACKOFF_MS = 8000;
 const providerState: Record<VisionProvider, { nextSlotMs: number }> = {
+  groq: { nextSlotMs: 0 },
   nemotron: { nextSlotMs: 0 },
   gemini: { nextSlotMs: 0 },
 };
@@ -104,18 +111,18 @@ function getErrorStatus(error: unknown): number | undefined {
 }
 
 function getProviderOrder(): VisionProvider[] {
-  // Gemini is primary for vision (reliable image analysis), Nemotron for text reasoning
-  const configured = (process.env.VISION_PROVIDER_ORDER || "gemini,nemotron")
+  const configured = (process.env.VISION_PROVIDER_ORDER || "groq,gemini,nemotron")
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
   const order = configured.filter(
-    (p): p is VisionProvider => p === "nemotron" || p === "gemini"
+    (p): p is VisionProvider => p === "groq" || p === "nemotron" || p === "gemini"
   );
-  return order.length > 0 ? order : ["gemini", "nemotron"];
+  return order.length > 0 ? order : ["groq", "gemini", "nemotron"];
 }
 
 function providerEnabled(provider: VisionProvider): boolean {
+  if (provider === "groq") return Boolean(process.env.GROQ_API_KEY);
   if (provider === "nemotron") return Boolean(process.env.NVIDIA_API_KEY);
   if (provider === "gemini") return Boolean(process.env.GEMINI_API_KEY);
   return false;
@@ -193,7 +200,26 @@ async function callVisionJson<T>(
     try {
       let text = "";
 
-      if (provider === "nemotron") {
+      if (provider === "groq") {
+        // Groq vision (OpenAI-compatible) — primary for BOLO scanning
+        const response = await withRetry("groq", () =>
+          groqClient.chat.completions.create({
+            model: GROQ_VISION_MODEL,
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: prompt + "\n\nRespond with raw JSON only. No markdown, no code fences." },
+                  { type: "image_url", image_url: { url: imageUrl } },
+                ],
+              },
+            ],
+            max_tokens: options?.maxTokens ?? 1024,
+            temperature: 0.1,
+          })
+        );
+        text = response.choices[0]?.message?.content ?? "";
+      } else if (provider === "nemotron") {
         // NVIDIA NIM API (OpenAI-compatible) with vision model
         const response = await withRetry("nemotron", () =>
           nvidiaClient.chat.completions.create({

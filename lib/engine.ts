@@ -43,7 +43,7 @@ function logEngine(level: "info" | "warn" | "error", message: string) {
 }
 
 function hasVisionProviderConfigured(): boolean {
-  return Boolean(process.env.NVIDIA_API_KEY || process.env.GEMINI_API_KEY);
+  return Boolean(process.env.GROQ_API_KEY || process.env.NVIDIA_API_KEY || process.env.GEMINI_API_KEY);
 }
 
 const globalForEngine = globalThis as unknown as {
