@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import Groq from "groq-sdk";
 import sharp from "sharp";
 import { CameraAnalysis, Bolo, VehicleAttributes } from "./types";
 
@@ -9,12 +10,15 @@ const NVIDIA_API_BASE = "https://integrate.api.nvidia.com/v1";
 const NEMOTRON_VISION_MODEL = process.env.NEMOTRON_VISION_MODEL || "nvidia/llama-3.2-nv-vision-instruct";
 const GEMINI_MODEL_VISION = process.env.VISION_MODEL_GEMINI || "gemini-2.5-flash";
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-const GROQ_VISION_MODEL = process.env.GROQ_VISION_MODEL || "llama-3.2-90b-vision-preview";
+const GROQ_VISION_MODEL = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
 
 const nvidiaClient = new OpenAI({
   baseURL: NVIDIA_API_BASE,
   apiKey: process.env.NVIDIA_API_KEY || "",
 });
+
+// Groq native SDK for BOLO vision scanning
+const groqNativeClient = new Groq({ apiKey: process.env.GROQ_API_KEY || "" });
 
 const groqClient = new OpenAI({
   baseURL: "https://api.groq.com/openai/v1",
@@ -597,6 +601,8 @@ export interface BoloScanResult {
     confidence: number;
     details: string;
     bbox?: [number, number, number, number];
+    cx?: number;
+    cy?: number;
     attributes?: VehicleAttributes;
   }>;
 }
@@ -732,77 +738,60 @@ export async function batchBoloScan(
     return { matches: [] };
   }
 
+  const boloDescriptions = activeBolos.map((b) => {
+    const parts: string[] = [];
+    if (b.color) parts.push(b.color);
+    if (b.make) parts.push(b.make);
+    if (b.model) parts.push(b.model);
+    if (b.plate) parts.push("plate: " + b.plate);
+    return "BOLO " + b.id + ": " + parts.join(" ") + " (" + b.description + ")";
+  }).join("\n");
+
   const allMatches: BoloScanResult["matches"] = [];
-  const primaryProvider = getPrimaryEnabledProvider();
 
-  // Use Gemini batch scan when available (supports multi-image)
-  if (primaryProvider === "gemini" || providerEnabled("gemini")) {
-    const batchSize = Number.parseInt(process.env.VISION_GEMINI_CAMERA_BATCH_SIZE || "6", 10);
-    const safeBatchSize = Number.isFinite(batchSize) ? Math.max(2, Math.min(10, batchSize)) : 6;
-    let allBatchesFailed = true;
-    for (let i = 0; i < cameras.length; i += safeBatchSize) {
-      const slice = cameras.slice(i, i + safeBatchSize);
-      try {
-        const matches = await geminiBatchBoloScan(slice, activeBolos);
-        allMatches.push(...matches);
-        allBatchesFailed = false;
-      } catch (error: unknown) {
-        console.warn("[Nemo BOLO] Gemini batch scan failed:", getErrorMessage(error));
-      }
-    }
-    if (!allBatchesFailed) {
-      return { matches: allMatches };
-    }
-    console.log("[Nemo BOLO] All Gemini batches failed, falling back to per-camera scan via Nemotron");
-  }
-
-  // Fallback: per-camera scan via Nemotron or available provider
-  const boloDescription = activeBolos
-    .map((b) => {
-      const attrs = [b.color, b.make, b.model, b.plate ? `plate=${b.plate}` : null].filter(Boolean).join(" ");
-      return `- ${b.id}: ${b.description}${attrs ? ` [${attrs}]` : ""}`;
-    })
-    .join("\n");
-
-  for (let ci = 0; ci < cameras.length; ci++) {
-    const camera = cameras[ci];
+  for (const cam of cameras) {
     try {
-      console.log(`[Nemo BOLO] scanning camera ${ci + 1}/${cameras.length}: ${camera.name}`);
-      const unavailable = await isLikelyUnavailableFrame(camera.imageUrl, true);
-      if (unavailable) {
-        console.log(`[Nemo BOLO] ${camera.name} skipped (unavailable frame)`);
-        continue;
+      const prompt = `BOLO SCAN - Camera: "${cam.name}"\n\nTargets to find:\n${boloDescriptions}\n\nInstructions:\n- Only report if you can CLEARLY see the described vehicle/person\n- bbox: tightest box around the vehicle body only — NOT the whole image\n- cx, cy: the EXACT CENTER of the vehicle in the image, as percentages from top-left. This must be precise.\n- confidence >= 0.75 required to report\n- Return empty if unsure or no match\n\nReturn ONLY JSON:\n{"matches":[{"boloId":"exact_id","confidence":0.9,"details":"what you see","bbox":[ymin,xmin,ymax,xmax],"cx":45.2,"cy":61.8}]}\nAll values 0-100 (percentages). Empty: {"matches":[]}`;
+
+      const response = await withRetry("groq", () =>
+        groqNativeClient.chat.completions.create({
+          model: GROQ_VISION_MODEL,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: cam.imageUrl } },
+            ],
+          }],
+          max_tokens: 256,
+        })
+      );
+
+      const text = response.choices[0]?.message?.content ?? "";
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (parsed.matches && parsed.matches.length > 0) {
+          for (const m of parsed.matches) {
+            const bbox = normalizeBboxValues(m.bbox);
+            const cx = typeof m.cx === "number" ? m.cx
+              : bbox ? (bbox[1] + bbox[3]) / 2 : undefined;
+            const cy = typeof m.cy === "number" ? m.cy
+              : bbox ? (bbox[0] + bbox[2]) / 2 : undefined;
+            allMatches.push({
+              cameraName: cam.name,
+              boloId: m.boloId,
+              confidence: m.confidence || 0.5,
+              details: m.details || "Visual match",
+              bbox,
+              cx,
+              cy,
+            });
+          }
+        }
       }
-
-      const prompt = [
-        "You are Nemo, an AI vehicle detection system scanning traffic cameras for BOLO alerts.",
-        "You MUST check EVERY visible vehicle and report ANY that could possibly match. Be aggressive - false positives are OK, missed detections are NOT.",
-        `Camera: "${camera.name}". Return JSON:`,
-        '{"matches":[{"boloId":"string","confidence":0.0,"details":"short reason","bbox":[ymin,xmin,ymax,xmax],"attributes":{"primaryColor":"string","make":"string","model":"string","bodyType":"string"}}]}',
-        "bbox is percentage 0-100. If truly no match: {\"matches\":[]}.",
-        "BOLOs:", boloDescription,
-        'A regular car counts as sedan. Light colored vehicles (white, silver, gray, beige) are potential matches for "white". Report with appropriate confidence.',
-      ].join("\n");
-
-      const parsed = await callVisionJson<ParsedBoloScanResponse>(prompt, camera.imageUrl, {
-        isUrl: true,
-        maxTokens: 400,
-      });
-
-      const boloIds = new Set(activeBolos.map((b) => b.id));
-      for (const m of parsed?.matches || []) {
-        if (!m.boloId || !boloIds.has(m.boloId)) continue;
-        allMatches.push({
-          cameraName: camera.name,
-          boloId: m.boloId,
-          confidence: Math.max(0, Math.min(1, m.confidence ?? 0.5)),
-          details: m.details || "Visual match",
-          bbox: normalizeBboxValues(m.bbox),
-          attributes: m.attributes,
-        });
-      }
-    } catch (error: unknown) {
-      console.warn(`[Nemo BOLO] ${camera.name} scan failed:`, getErrorMessage(error));
+    } catch (e: unknown) {
+      console.warn(`[BOLO] ${cam.name} scan failed:`, getErrorMessage(e));
     }
   }
 

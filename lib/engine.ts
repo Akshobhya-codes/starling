@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import { poll511, pollDataSF } from "./feeds";
 import { loadCameras, getCameras, fetchCameraImage, getWorkingCameras } from "./cameras";
 import { analyzeCamera, batchBoloScan, verifyBoloCandidate } from "./vision";
@@ -92,8 +94,11 @@ export function startEngine() {
   // Initial traffic update after 5s
   setTimeout(() => updateTrafficFromIncidents(), 5000);
 
-  console.log("[Engine] Core started — features await user activation");
-  logEngine("info", "Core started; waiting for feature toggles");
+  // BOLO scan always runs independently of feature toggles
+  startBoloScanLoop();
+
+  console.log("[Engine] Core started — BOLO scanner active, features await user activation");
+  logEngine("info", "Core started; BOLO scanner active");
 }
 
 // ── Feature toggle API ──
@@ -776,186 +781,93 @@ async function runLegacyValidationScan(cams: CameraInfo[]) {
 
 async function runBoloScanBatch() {
   const activeBolos = store.getActiveBolos();
-  if (activeBolos.length === 0 || !store.features.cameras) return;
+  if (activeBolos.length === 0) return;
 
-  // Use only working cameras (excludes "temporarily unavailable")
   const allCams = getWorkingCameras().filter(c => c.imageUrl);
   if (allCams.length === 0) {
     console.log("[BOLO Scan] No working cameras available");
-    logEngine("warn", "BOLO scan skipped (no working cameras)");
     return;
   }
-  
-  const scanConfig = getBoloScanConfig();
-  const totalCamsPerCycle = Math.min(scanConfig.batchSize * scanConfig.parallelBatches, allCams.length);
-  
-  // Get camera batches
-  const batches: CameraInfo[][] = [];
-  for (let b = 0; b < scanConfig.parallelBatches; b++) {
-    const startIdx = (getBoloScanOffset() + b * scanConfig.batchSize) % allCams.length;
-    const batch: CameraInfo[] = [];
-    for (let i = 0; i < scanConfig.batchSize && batch.length < allCams.length; i++) {
-      batch.push(allCams[(startIdx + i) % allCams.length]);
-    }
-    batches.push(batch);
+
+  const BATCH_SIZE = 15;
+  const totalCamsPerCycle = Math.min(BATCH_SIZE, allCams.length);
+  const cycleCams: CameraInfo[] = [];
+  for (let i = 0; i < totalCamsPerCycle; i++) {
+    cycleCams.push(allCams[(getBoloScanOffset() + i) % allCams.length]);
   }
   setBoloScanOffset((getBoloScanOffset() + totalCamsPerCycle) % allCams.length);
 
-  console.log(
-    `[BOLO Scan] ${store.features.boloV2 ? "V2" : "V1"} scanning ${totalCamsPerCycle} cameras for ${activeBolos.length} BOLO(s)`
-  );
-  logEngine(
-    "info",
-    `BOLO ${store.features.boloV2 ? "V2" : "V1"} cycle start: ${totalCamsPerCycle} cams, ${activeBolos.length} bolos`
+  console.log(`[BOLO Scan] Scanning ${totalCamsPerCycle} cameras for ${activeBolos.length} BOLO(s): ${activeBolos.map(b => b.description).join(", ")}`);
+
+  // Scan all cameras in parallel for maximum speed
+  const scanResults = await Promise.allSettled(
+    cycleCams.map(async (cam) => {
+      const result = await batchBoloScan([{ name: cam.name, imageUrl: cam.imageUrl }], activeBolos);
+      return { cam, matches: result.matches };
+    })
   );
 
-  if (!store.features.boloV2) {
-    for (const batch of batches) {
-      for (const cam of batch) {
-        try {
-          const analysis = await analyzeCamera(cam.imageUrl, cam.name, activeBolos, true);
-          const rawAnalysis = analysis as CameraInfo["lastAnalysis"] & {
-            boloMatches?: Array<{
-              boloId?: string;
-              confidence?: number;
-              details?: string;
-              bbox?: [number, number, number, number];
-            }>;
-          };
-          for (const match of rawAnalysis.boloMatches || []) {
-            if (!match.boloId) continue;
-            recordBoloSighting(
-              match.boloId,
-              cam,
-              match.details || "Legacy visual match on camera",
-              match.confidence || 0.5,
-              match.bbox
-            );
-          }
-        } catch (error) {
-          console.warn("[BOLO Scan] V1 camera scan failed:", error);
-        }
+  for (const r of scanResults) {
+    if (r.status !== "fulfilled") continue;
+    for (const match of r.value.matches) {
+      const matchCam = r.value.cam;
+      // Try exact match first, then fuzzy (AI sometimes returns partial ID)
+      let bolo = store.bolos.get(match.boloId);
+      if (!bolo) {
+        bolo = activeBolos.find(b => b.id.includes(match.boloId) || match.boloId.includes(b.id)) || undefined;
       }
-    }
-    return;
-  }
-
-  const batchPromises = batches.map(async (cams, bIdx) => {
-    const camerasWithUrls = cams.map(cam => ({
-      name: cam.name,
-      imageUrl: cam.imageUrl,
-      cam,
-    }));
-
-    console.log(`[BOLO Scan] batch ${bIdx} starting with ${cams.length} cameras: ${cams.map(c => c.name).join(", ")}`);
-    const t0 = Date.now();
-    try {
-      const result = await batchBoloScan(
-        camerasWithUrls.map(c => ({ name: c.name, imageUrl: c.imageUrl })),
-        activeBolos
-      );
-      console.log(`[BOLO Scan] batch ${bIdx} done in ${((Date.now() - t0) / 1000).toFixed(1)}s, matches=${result.matches.length}`);
-      return result.matches.map(match => ({ match, cams: camerasWithUrls }));
-    } catch (err) {
-      console.error(`[BOLO Scan] batch ${bIdx} FAILED in ${((Date.now() - t0) / 1000).toFixed(1)}s:`, err);
-      throw err;
-    }
-  });
-
-  const allResults = await Promise.allSettled(batchPromises);
-  const rawCandidates: BatchedMatchCandidate[] = [];
-
-  for (const batchResult of allResults) {
-    if (batchResult.status !== "fulfilled") continue;
-    
-    for (const { match, cams } of batchResult.value) {
-      const camData = cams.find(c => c.name === match.cameraName);
-      if (!camData) continue;
-      rawCandidates.push({
-        cam: camData.cam,
-        match: {
-          cameraName: match.cameraName,
-          boloId: match.boloId,
-          confidence: match.confidence || 0.5,
-          details: match.details || "Visual match on camera",
-          bbox: match.bbox,
-          attributes: match.attributes,
-        },
-      });
-    }
-  }
-
-  const verifyConfig = getBoloVerifyConfig();
-  const candidatesToVerify = selectVerificationCandidates(rawCandidates, {
-    topPerBolo: verifyConfig.topPerBolo,
-    maxPerCycle: verifyConfig.maxPerCycle,
-  });
-  logEngine(
-    "info",
-    `BOLO candidates: raw=${rawCandidates.length}, selected=${candidatesToVerify.length}, min=${verifyConfig.minConfidence.toFixed(2)}`
-  );
-
-  const acceptedMatches: BatchedMatchCandidate[] = [];
-  for (const candidate of candidatesToVerify) {
-    const bolo = store.bolos.get(candidate.match.boloId);
-    if (!bolo || bolo.status === "cleared") continue;
-
-    // High-confidence batch matches skip the extra verification API call
-    // since the batch prompt is already a targeted BOLO-matching question
-    if (candidate.match.confidence >= 0.65) {
-      logEngine("info", `BOLO high-conf batch match ${bolo.id} at ${candidate.cam.name} conf=${candidate.match.confidence.toFixed(2)} (skipping verify)`);
-      acceptedMatches.push(candidate);
-      continue;
-    }
-
-    if (!candidate.match.bbox) continue;
-    try {
-      const verification = await verifyBoloCandidate(
-        candidate.cam.imageUrl,
-        candidate.cam.name,
-        bolo,
-        {
-          bbox: candidate.match.bbox,
-          confidence: candidate.match.confidence,
-          details: candidate.match.details,
-          attributes: candidate.match.attributes || { source: "llm", confidenceByAttribute: {} },
-        },
-        true
-      );
-      if (!verification.matched || verification.confidence < verifyConfig.minConfidence) {
+      if (!bolo || bolo.status === "cleared") continue;
+      if ((match.confidence || 0) < 0.65) {
+        console.log(`[BOLO Scan] Low confidence (${match.confidence}) skipped at ${matchCam.name}`);
         continue;
       }
-      acceptedMatches.push({
-        cam: candidate.cam,
-        match: {
-          ...candidate.match,
-          confidence: Math.max(candidate.match.confidence, verification.confidence),
-          details: `${candidate.match.details}; ${verification.details}`.slice(0, 220),
-        },
-      });
-    } catch (error) {
-      console.warn("[BOLO Scan] verification failed, accepting batch match:", candidate.match.confidence >= 0.5 ? "accepted" : "rejected");
-      if (candidate.match.confidence >= 0.5) {
-        acceptedMatches.push(candidate);
+
+      const sightingId = "sight_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
+
+      // Save a frozen screenshot so proof doesn't change as feed updates
+      let proofUrl = matchCam.imageUrl;
+      try {
+        const imgRes = await fetch(matchCam.imageUrl, { signal: AbortSignal.timeout(8000) });
+        if (imgRes.ok) {
+          const imgBuf = Buffer.from(await imgRes.arrayBuffer());
+          const proofsPath = path.join(process.cwd(), "proofs");
+          if (!fs.existsSync(proofsPath)) fs.mkdirSync(proofsPath, { recursive: true });
+          fs.writeFileSync(path.join(proofsPath, `${sightingId}.jpg`), imgBuf);
+          const bboxStr = match.bbox?.length === 4 ? `&bbox=${match.bbox.join(",")}` : "";
+          const centerStr = typeof match.cx === "number" && typeof match.cy === "number"
+            ? `&cx=${match.cx.toFixed(1)}&cy=${match.cy.toFixed(1)}` : "";
+          proofUrl = `/api/proof?id=${sightingId}${bboxStr}${centerStr}&label=SUSPECT+VEHICLE+FOUND&location=${encodeURIComponent(matchCam.name)}`;
+          console.log(`[BOLO Scan] Screenshot saved: ${sightingId}.jpg`);
+        }
+      } catch {
+        if (match.bbox?.length === 4) {
+          const bboxStr = match.bbox.join(",");
+          proofUrl = `/api/proof?url=${encodeURIComponent(matchCam.imageUrl)}&bbox=${bboxStr}&label=SUSPECT+VEHICLE+FOUND&location=${encodeURIComponent(matchCam.name)}`;
+        }
       }
+
+      const sighting: BoloSighting = {
+        id: sightingId,
+        boloId: bolo.id,
+        source: "camera",
+        sourceId: matchCam.id,
+        location: matchCam.name,
+        lat: matchCam.lat,
+        lng: matchCam.lng,
+        timestamp: new Date().toISOString(),
+        confidence: match.confidence || 0.5,
+        details: match.details || "Visual match on camera",
+        proofImageUrl: proofUrl,
+      };
+
+      bolo.sightings.push(sighting);
+      bolo.status = "sighted";
+      bolo.lastKnownLocation = matchCam.name;
+      store.bolos.set(bolo.id, bolo);
+      sseBroker.broadcast("bolo:sighting", { bolo, sighting });
+      console.log(`[BOLO Scan] MATCH! "${bolo.description}" at ${matchCam.name} conf=${match.confidence}`);
     }
   }
-
-  const v2Hits: Array<{ boloId: string; cameraId: string }> = [];
-  for (const accepted of acceptedMatches) {
-    v2Hits.push({ boloId: accepted.match.boloId, cameraId: accepted.cam.id });
-    recordBoloSighting(
-      accepted.match.boloId,
-      accepted.cam,
-      accepted.match.details,
-      accepted.match.confidence,
-      accepted.match.bbox,
-      accepted.match.attributes,
-      true
-    );
-  }
-
-  logEngine("info", `BOLO cycle complete; matches=${v2Hits.length}`);
 }
 
 export function startBoloScanLoop() {
@@ -970,7 +882,7 @@ export function startBoloScanLoop() {
   logEngine("info", `BOLO scan loop started (${scanConfig.scanIntervalMs / 1000}s interval, ${scanConfig.parallelBatches}x${scanConfig.batchSize})`);
 
   const tick = async () => {
-    if (!getBoloScanRunning() || !store.features.cameras) return;
+    if (!getBoloScanRunning()) return;
 
     try {
       await runBoloScanBatch();
@@ -979,9 +891,9 @@ export function startBoloScanLoop() {
       logEngine("error", "BOLO scan cycle error");
     }
 
-    if (getBoloScanRunning() && store.features.cameras) {
+    if (getBoloScanRunning()) {
       const hasBolos = store.getActiveBolos().length > 0;
-      const nextDelay = hasBolos ? getBoloScanConfig().scanIntervalMs : 60000;
+      const nextDelay = hasBolos ? 12000 : 60000;
       setBoloScanTimer(setTimeout(tick, nextDelay));
     }
   };
