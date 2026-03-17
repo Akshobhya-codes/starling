@@ -6,7 +6,7 @@ import HypothesisPanel from "@/components/HypothesisPanel";
 import SitrepPanel from "@/components/SitrepPanel";
 import StatusBar from "@/components/StatusBar";
 import HudOverlay from "@/components/HudOverlay";
-import CommandBar from "@/components/CommandBar";
+import NemoChat from "@/components/NemoChat";
 import IncidentDetail from "@/components/IncidentDetail";
 import BoundingBoxControl from "@/components/BoundingBox";
 import type { BBox, TrafficFlow } from "@/components/CesiumMap";
@@ -121,10 +121,14 @@ export default function Home() {
       const bolo = JSON.parse(e.data);
       setBolos((prev) => prev.map((b) => (b.id === bolo.id ? bolo : b)));
     });
+    es.addEventListener("features", (e) => {
+      const f = JSON.parse(e.data);
+      setFeatures(f);
+    });
     return () => es.close();
   }, []);
 
-  // Sync feature flags from backend (FeatureToggles writes to /api/features)
+  // Sync feature flags from backend
   useEffect(() => {
     let cancelled = false;
     const pull = async () => {
@@ -169,12 +173,10 @@ export default function Home() {
 
   // Compute a viewport bbox from camera position + altitude for road fetching
   const viewportBbox = useMemo(() => {
-    // If user drew a bbox, use that; otherwise derive from camera viewport
     if (bbox) return bbox;
-    // Approximate visible area from altitude (degrees per meter at SF latitude)
     const degPerMeter = 1 / 111320;
-    const spread = cameraPos.alt * degPerMeter * 1.2; // visible radius in degrees
-    const clampedSpread = Math.min(spread, 0.05); // cap at ~5km to avoid huge Overpass queries
+    const spread = cameraPos.alt * degPerMeter * 1.2;
+    const clampedSpread = Math.min(spread, 0.05);
     return {
       south: cameraPos.lat - clampedSpread,
       north: cameraPos.lat + clampedSpread,
@@ -183,14 +185,12 @@ export default function Home() {
     };
   }, [bbox, cameraPos.lat, cameraPos.lng, cameraPos.alt]);
 
-  // Debounced viewport key to avoid refetching on every tiny camera move
   const [debouncedViewport, setDebouncedViewport] = useState(viewportBbox);
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedViewport(viewportBbox), 800);
     return () => clearTimeout(timer);
   }, [viewportBbox]);
 
-  // Fetch real road geometry from Overpass for current viewport
   useEffect(() => {
     let cancelled = false;
     const vp = debouncedViewport;
@@ -208,7 +208,6 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [debouncedViewport]);
 
-  // Poll vessel positions (only when enabled)
   useEffect(() => {
     if (!features.ships) return;
     let cancelled = false;
@@ -229,7 +228,6 @@ export default function Home() {
     };
   }, [features.ships, debouncedViewport]);
 
-  // Poll flight positions (only when enabled)
   useEffect(() => {
     if (!features.flights) return;
     let cancelled = false;
@@ -260,7 +258,6 @@ export default function Home() {
           setHypotheses((prev) => {
             const existingIds = new Set(prev.map((h) => h.id));
             const serverIds = new Set(serverHyps.map((h) => h.id));
-            // Add new ones to the top, update existing, remove cleared
             const newOnes = serverHyps.filter((h) => !existingIds.has(h.id));
             const updated = prev
               .filter((h) => serverIds.has(h.id))
@@ -274,7 +271,6 @@ export default function Home() {
     return () => clearInterval(iv);
   }, []);
 
-  // Filter by bounding box and type
   const filteredHypotheses = useMemo(() => {
     let filtered = hypotheses;
     if (bbox) {
@@ -314,8 +310,12 @@ export default function Home() {
       <div className="flex items-center justify-between px-4 py-1.5 bg-black/40 border-b border-white/[0.06] z-30 relative">
         <div className="flex items-center gap-3">
           <h1 className="text-[11px] font-mono tracking-[0.2em] uppercase text-white/60">
-            SF OSINT <span className="text-white/25">Fusion Center</span>
+            STARLING <span className="text-white/25">Nemo Ops</span>
           </h1>
+          <div className="w-px h-3 bg-white/[0.08]" />
+          <span className="text-[8px] font-mono tracking-wider text-white/15">
+            AI Operations Center · Powered by NVIDIA Nemotron
+          </span>
         </div>
         <div className="flex items-center gap-3">
           <FeatureToggles />
@@ -342,8 +342,29 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Main */}
+      {/* Main: 3-column layout — Nemo Chat | Map | Data Panels */}
       <div className="flex-1 flex overflow-hidden">
+        {/* Left panel: Nemo Chat Terminal (primary interface) */}
+        <div className="w-96 flex flex-col bg-[#060608]/95 backdrop-blur-xl border-r border-white/[0.06] z-20 relative">
+          <NemoChat
+            onFlyTo={(lat, lng) => setFlyToTarget({ lat, lng })}
+            onHighlight={(ids) => {
+              if (ids.length === 1) setSelectedHypothesis(ids[0]);
+            }}
+            onFilterType={(type) => {
+              if (type) {
+                setTypeFilter(type as IncidentType);
+                setActiveTab("hypotheses");
+              }
+            }}
+            onBoloCreated={(bolo) => {
+              setBolos((prev) => [bolo as Bolo, ...prev.filter((b) => b.id !== (bolo as Bolo).id)]);
+              setActiveTab("bolos");
+            }}
+          />
+        </div>
+
+        {/* Center: Cesium Map */}
         <div className="flex-1 relative">
           <CesiumMap
             hypotheses={filteredHypotheses}
@@ -375,24 +396,6 @@ export default function Home() {
             feedStatus={feedStatus}
             activeCount={filteredHypotheses.length}
           />
-          <div className="absolute bottom-6 left-1/2 z-30 -translate-x-1/2">
-            <CommandBar
-              onFlyTo={(lat, lng) => setFlyToTarget({ lat, lng })}
-              onHighlight={(ids) => {
-                if (ids.length === 1) setSelectedHypothesis(ids[0]);
-              }}
-              onFilterType={(type) => {
-                if (type) {
-                  setTypeFilter(type as IncidentType);
-                  setActiveTab("hypotheses");
-                }
-              }}
-              onBoloCreated={(bolo) => {
-                setBolos((prev) => [bolo as Bolo, ...prev.filter((b) => b.id !== (bolo as Bolo).id)]);
-                setActiveTab("bolos");
-              }}
-            />
-          </div>
           {selectedCamera && (
             <CameraViewer
               cameras={cameras}
@@ -404,7 +407,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* Right rail with tabs */}
+        {/* Right rail: Data panels with tabs */}
         <div className="w-80 flex flex-col bg-[#060608]/90 backdrop-blur-xl border-l border-white/[0.06] z-20 relative">
           {/* Tab bar */}
           <div className="flex border-b border-white/[0.06]">

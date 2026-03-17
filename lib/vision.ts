@@ -1,22 +1,25 @@
-import Groq from "groq-sdk";
+import OpenAI from "openai";
 import sharp from "sharp";
 import { CameraAnalysis, Bolo, VehicleAttributes } from "./types";
 
-type VisionProvider = "gemini" | "together" | "groq";
+// ── NVIDIA Nemotron (primary) via OpenAI-compatible NIM API ──
+type VisionProvider = "nemotron" | "gemini";
 
-const GROQ_MODEL_VISION = "meta-llama/llama-4-scout-17b-16e-instruct";
+const NVIDIA_API_BASE = "https://integrate.api.nvidia.com/v1";
+const NEMOTRON_VISION_MODEL = process.env.NEMOTRON_VISION_MODEL || "nvidia/llama-3.2-nv-vision-instruct";
 const GEMINI_MODEL_VISION = process.env.VISION_MODEL_GEMINI || "gemini-2.5-flash";
 const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-const TOGETHER_MODEL_VISION = process.env.VISION_MODEL_TOGETHER || "Qwen/Qwen2.5-VL-72B-Instruct";
-const TOGETHER_API_URL = "https://api.together.xyz/v1/chat/completions";
 
-const groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY || "" });
+const nvidiaClient = new OpenAI({
+  baseURL: NVIDIA_API_BASE,
+  apiKey: process.env.NVIDIA_API_KEY || "",
+});
+
 const VISION_MIN_INTERVAL_MS = 700;
 const RATE_LIMIT_BACKOFF_MS = 8000;
 const providerState: Record<VisionProvider, { nextSlotMs: number }> = {
+  nemotron: { nextSlotMs: 0 },
   gemini: { nextSlotMs: 0 },
-  together: { nextSlotMs: 0 },
-  groq: { nextSlotMs: 0 },
 };
 
 interface ParsedCameraAnalysis {
@@ -101,20 +104,21 @@ function getErrorStatus(error: unknown): number | undefined {
 }
 
 function getProviderOrder(): VisionProvider[] {
-  const configured = (process.env.VISION_PROVIDER_ORDER || "gemini,groq,together")
+  // Gemini is primary for vision (reliable image analysis), Nemotron for text reasoning
+  const configured = (process.env.VISION_PROVIDER_ORDER || "gemini,nemotron")
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
   const order = configured.filter(
-    (p): p is VisionProvider => p === "gemini" || p === "together" || p === "groq"
+    (p): p is VisionProvider => p === "nemotron" || p === "gemini"
   );
-  return order.length > 0 ? order : ["gemini", "groq", "together"];
+  return order.length > 0 ? order : ["gemini", "nemotron"];
 }
 
 function providerEnabled(provider: VisionProvider): boolean {
+  if (provider === "nemotron") return Boolean(process.env.NVIDIA_API_KEY);
   if (provider === "gemini") return Boolean(process.env.GEMINI_API_KEY);
-  if (provider === "together") return Boolean(process.env.TOGETHER_API_KEY);
-  return Boolean(process.env.GROQ_API_KEY);
+  return false;
 }
 
 function getPrimaryEnabledProvider(): VisionProvider | null {
@@ -188,7 +192,31 @@ async function callVisionJson<T>(
     if (!providerEnabled(provider)) continue;
     try {
       let text = "";
-      if (provider === "gemini") {
+
+      if (provider === "nemotron") {
+        // NVIDIA NIM API (OpenAI-compatible) with vision model
+        const response = await withRetry("nemotron", () =>
+          nvidiaClient.chat.completions.create({
+            model: NEMOTRON_VISION_MODEL,
+            messages: [
+              {
+                role: "system",
+                content: "You are Nemo, an AI operations analyst. Output raw JSON with no explanation, no markdown, no code fences.",
+              },
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: prompt },
+                  { type: "image_url", image_url: { url: imageUrl } },
+                ],
+              },
+            ],
+            max_tokens: options?.maxTokens ?? 512,
+            temperature: 0.1,
+          })
+        );
+        text = response.choices[0]?.message?.content ?? "";
+      } else if (provider === "gemini") {
         if (!imageBase64) {
           const imageBuffer = await getImageBuffer(imageSource, Boolean(options?.isUrl));
           imageBase64 = imageBuffer ? imageBuffer.toString("base64") : null;
@@ -200,21 +228,14 @@ async function callVisionJson<T>(
           const url = `${GEMINI_API_BASE}/${encodeURIComponent(GEMINI_MODEL_VISION)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY || "")}`;
           const res = await fetch(url, {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               contents: [
                 {
                   role: "user",
                   parts: [
                     { text: prompt },
-                    {
-                      inline_data: {
-                        mime_type: "image/jpeg",
-                        data: imageBase64,
-                      },
-                    },
+                    { inline_data: { mime_type: "image/jpeg", data: imageBase64 } },
                   ],
                 },
               ],
@@ -234,64 +255,13 @@ async function callVisionJson<T>(
           }>;
         });
         text = response.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("\n") || "";
-      } else if (provider === "together") {
-        const response = await withRetry("together", async () => {
-          const res = await fetch(TOGETHER_API_URL, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${process.env.TOGETHER_API_KEY}`,
-            },
-            body: JSON.stringify({
-              model: TOGETHER_MODEL_VISION,
-              messages: [
-                {
-                  role: "user",
-                  content: [
-                    { type: "text", text: prompt },
-                    { type: "image_url", image_url: { url: imageUrl } },
-                  ],
-                },
-              ],
-              max_tokens: options?.maxTokens ?? 256,
-            }),
-          });
-          if (!res.ok) {
-            const bodyText = await res.text();
-            throw { status: res.status, message: bodyText || `Together API error ${res.status}` };
-          }
-          return res.json() as Promise<{ choices?: Array<{ message?: { content?: string } }> }>;
-        });
-        text = response.choices?.[0]?.message?.content ?? "";
-      } else {
-        const response = await withRetry("groq", () =>
-          groqClient.chat.completions.create({
-            model: GROQ_MODEL_VISION,
-            messages: [
-              {
-                role: "system",
-                content: "You are a JSON-only API. Output raw JSON with no explanation, no markdown, no code fences.",
-              },
-              {
-                role: "user",
-                content: [
-                  { type: "text", text: prompt },
-                  { type: "image_url", image_url: { url: imageUrl } },
-                ],
-              },
-            ],
-            max_tokens: options?.maxTokens ?? 256,
-            response_format: { type: "json_object" },
-          })
-        );
-        text = response.choices[0]?.message?.content ?? "";
       }
 
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (!jsonMatch) return null;
       return JSON.parse(jsonMatch[0]) as T;
     } catch (error: unknown) {
-      console.warn(`[Vision] ${provider} failed:`, getErrorMessage(error).slice(0, 200));
+      console.warn(`[Nemo Vision] ${provider} failed:`, getErrorMessage(error).slice(0, 200));
       lastError = error;
       continue;
     }
@@ -300,7 +270,7 @@ async function callVisionJson<T>(
   if (lastError) {
     throw lastError;
   }
-  throw new Error("No vision provider configured. Set GEMINI_API_KEY, GROQ_API_KEY, or TOGETHER_API_KEY.");
+  throw new Error("No vision provider configured. Set NVIDIA_API_KEY or GEMINI_API_KEY.");
 }
 
 async function getImageBuffer(imageSource: string, isUrl: boolean): Promise<Buffer | null> {
@@ -410,7 +380,7 @@ export async function vehicleDetect(
         },
       }));
   } catch (error: unknown) {
-    console.warn(`[Vision] vehicleDetect failed for ${cameraName}:`, getErrorMessage(error));
+    console.warn(`[Nemo Vision] vehicleDetect failed for ${cameraName}:`, getErrorMessage(error));
     return [];
   }
 }
@@ -444,7 +414,7 @@ export async function vehicleAttributes(
       source: "attribute-model",
     };
   } catch (error: unknown) {
-    console.warn(`[Vision] vehicleAttributes failed for ${cameraName}:`, getErrorMessage(error));
+    console.warn(`[Nemo Vision] vehicleAttributes failed for ${cameraName}:`, getErrorMessage(error));
     return { source: "attribute-model", confidenceByAttribute: {} };
   }
 }
@@ -506,10 +476,10 @@ export async function verifyBoloCandidate(
     return {
       matched: Boolean(parsed?.matched),
       confidence: Math.max(0, Math.min(1, parsed?.confidence ?? 0.5)),
-      details: parsed?.details || "Vision verification",
+      details: parsed?.details || "Nemo vision verification",
     };
   } catch (error: unknown) {
-    console.warn(`[Vision] verifyBoloCandidate failed for ${cameraName}:`, getErrorMessage(error));
+    console.warn(`[Nemo Vision] verifyBoloCandidate failed for ${cameraName}:`, getErrorMessage(error));
     return { matched: false, confidence: 0, details: "Vision verification failed" };
   }
 }
@@ -584,7 +554,7 @@ For boloMatches: [{"boloId":"id","confidence":0.8,"details":"what matched","bbox
     }
     return result;
   } catch (error: unknown) {
-    console.error("Vision analysis error:", getErrorMessage(error));
+    console.error("[Nemo Vision] analysis error:", getErrorMessage(error));
     return {
       hasIncident: false,
       incidents: [],
@@ -616,7 +586,7 @@ async function geminiBatchBoloScan(
     }))
   );
   const valid = buffers.filter((entry) => entry.buffer !== null);
-  console.log(`[BOLO Gemini] ${valid.length}/${cameras.length} cameras have valid images`);
+  console.log(`[Nemo BOLO] ${valid.length}/${cameras.length} cameras have valid images`);
   if (valid.length === 0) return [];
 
   const boloDescription = activeBolos
@@ -681,10 +651,10 @@ async function geminiBatchBoloScan(
   });
 
   const text = response.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("\n") || "";
-  console.log(`[BOLO Gemini] raw response (${text.length} chars): ${text.slice(0, 500)}`);
+  console.log(`[Nemo BOLO Gemini] raw response (${text.length} chars): ${text.slice(0, 500)}`);
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
-    console.log("[BOLO Gemini] no JSON found in response");
+    console.log("[Nemo BOLO] no JSON found in response");
     return [];
   }
 
@@ -692,7 +662,7 @@ async function geminiBatchBoloScan(
   try {
     parsed = JSON.parse(jsonMatch[0]) as ParsedBoloScanResponse;
   } catch (e) {
-    console.warn("[BOLO Gemini] JSON parse failed:", (e as Error).message);
+    console.warn("[Nemo BOLO] JSON parse failed:", (e as Error).message);
     return [];
   }
 
@@ -739,7 +709,8 @@ export async function batchBoloScan(
   const allMatches: BoloScanResult["matches"] = [];
   const primaryProvider = getPrimaryEnabledProvider();
 
-  if (primaryProvider === "gemini") {
+  // Use Gemini batch scan when available (supports multi-image)
+  if (primaryProvider === "gemini" || providerEnabled("gemini")) {
     const batchSize = Number.parseInt(process.env.VISION_GEMINI_CAMERA_BATCH_SIZE || "6", 10);
     const safeBatchSize = Number.isFinite(batchSize) ? Math.max(2, Math.min(10, batchSize)) : 6;
     let allBatchesFailed = true;
@@ -750,15 +721,16 @@ export async function batchBoloScan(
         allMatches.push(...matches);
         allBatchesFailed = false;
       } catch (error: unknown) {
-        console.warn("[BOLO] Gemini batch scan failed:", getErrorMessage(error));
+        console.warn("[Nemo BOLO] Gemini batch scan failed:", getErrorMessage(error));
       }
     }
     if (!allBatchesFailed) {
       return { matches: allMatches };
     }
-    console.log("[BOLO] All Gemini batches failed, falling back to per-camera scan via secondary providers");
+    console.log("[Nemo BOLO] All Gemini batches failed, falling back to per-camera scan via Nemotron");
   }
 
+  // Fallback: per-camera scan via Nemotron or available provider
   const boloDescription = activeBolos
     .map((b) => {
       const attrs = [b.color, b.make, b.model, b.plate ? `plate=${b.plate}` : null].filter(Boolean).join(" ");
@@ -769,15 +741,15 @@ export async function batchBoloScan(
   for (let ci = 0; ci < cameras.length; ci++) {
     const camera = cameras[ci];
     try {
-      console.log(`[BOLO] scanning camera ${ci + 1}/${cameras.length}: ${camera.name}`);
+      console.log(`[Nemo BOLO] scanning camera ${ci + 1}/${cameras.length}: ${camera.name}`);
       const unavailable = await isLikelyUnavailableFrame(camera.imageUrl, true);
       if (unavailable) {
-        console.log(`[BOLO] ${camera.name} skipped (unavailable frame)`);
+        console.log(`[Nemo BOLO] ${camera.name} skipped (unavailable frame)`);
         continue;
       }
 
       const prompt = [
-        "You are a vehicle detection system scanning traffic cameras for BOLO alerts.",
+        "You are Nemo, an AI vehicle detection system scanning traffic cameras for BOLO alerts.",
         "You MUST check EVERY visible vehicle and report ANY that could possibly match. Be aggressive - false positives are OK, missed detections are NOT.",
         `Camera: "${camera.name}". Return JSON:`,
         '{"matches":[{"boloId":"string","confidence":0.0,"details":"short reason","bbox":[ymin,xmin,ymax,xmax],"attributes":{"primaryColor":"string","make":"string","model":"string","bodyType":"string"}}]}',
@@ -804,7 +776,7 @@ export async function batchBoloScan(
         });
       }
     } catch (error: unknown) {
-      console.warn(`[BOLO] ${camera.name} scan failed:`, getErrorMessage(error));
+      console.warn(`[Nemo BOLO] ${camera.name} scan failed:`, getErrorMessage(error));
     }
   }
 

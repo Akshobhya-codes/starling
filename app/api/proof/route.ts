@@ -62,6 +62,10 @@ function parseBbox(params: URLSearchParams, width: number, height: number): {
   return { bbox, rectX, rectY, rectW, rectH, cx, cy, radius };
 }
 
+function escapeXml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 function buildOverlaySvg(args: {
   width: number;
   height: number;
@@ -74,42 +78,73 @@ function buildOverlaySvg(args: {
   radius: number;
   label: string;
   confidence: number;
+  location: string;
 }) {
-  const strokeWidth = Math.max(2, Math.round(Math.min(args.width, args.height) * 0.005));
-  const labelText = `${args.label} ${(args.confidence * 100).toFixed(0)}%`;
-  const labelWidth = Math.max(130, Math.round(labelText.length * 8));
-  const labelHeight = 22;
+  const strokeWidth = Math.max(3, Math.round(Math.min(args.width, args.height) * 0.006));
+  const bracketLen = Math.max(8, Math.round(Math.min(args.rectW, args.rectH) * 0.3));
 
-  // Position label above the rect, but keep it on screen
-  let labelX = Math.max(0, args.cx - labelWidth / 2);
-  if (labelX + labelWidth > args.width) labelX = args.width - labelWidth;
-  let labelY = args.rectY - labelHeight - 6;
-  if (labelY < 0) labelY = args.rectY + args.rectH + 6;
+  // --- Top banner: "SUSPECT VEHICLE FOUND" ---
+  const bannerHeight = Math.max(32, Math.round(args.height * 0.06));
+  const bannerFontSize = Math.max(14, Math.round(bannerHeight * 0.45));
 
-  // Corner bracket length (proportional to rect size)
-  const bracketLen = Math.max(6, Math.round(Math.min(args.rectW, args.rectH) * 0.3));
+  // --- Label pill above bounding box ---
+  const confText = `${(args.confidence * 100).toFixed(0)}% MATCH`;
+  const confWidth = Math.max(90, Math.round(confText.length * 8));
+  const confHeight = 20;
+  let confX = Math.max(0, args.cx - confWidth / 2);
+  if (confX + confWidth > args.width) confX = args.width - confWidth;
+  let confY = args.rectY - confHeight - 8;
+  if (confY < bannerHeight + 4) confY = args.rectY + args.rectH + 8;
+
+  // --- Bottom bar: location/address ---
+  const bottomBarHeight = Math.max(28, Math.round(args.height * 0.05));
+  const bottomFontSize = Math.max(11, Math.round(bottomBarHeight * 0.42));
+  const locationText = escapeXml(args.location || "Unknown Location");
+  const timestampText = new Date().toLocaleString("en-US", {
+    month: "short", day: "numeric", year: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  });
 
   return `
-  <svg width="${args.width}" height="${args.height}">
-    <!-- Detection rectangle -->
+  <svg width="${args.width}" height="${args.height}" xmlns="http://www.w3.org/2000/svg">
+    <!-- Top banner -->
+    <rect x="0" y="0" width="${args.width}" height="${bannerHeight}" fill="#000000" opacity="0.85" />
+    <rect x="0" y="0" width="6" height="${bannerHeight}" fill="#FFD600" />
+    <text x="${16}" y="${bannerHeight * 0.65}" fill="#FFD600" font-size="${bannerFontSize}"
+          font-weight="bold" font-family="Arial, sans-serif" letter-spacing="2">⚠ SUSPECT VEHICLE FOUND</text>
+    <text x="${args.width - 10}" y="${bannerHeight * 0.65}" fill="#ffffff" font-size="${Math.round(bannerFontSize * 0.7)}"
+          font-family="Arial, sans-serif" text-anchor="end" opacity="0.6">${(args.confidence * 100).toFixed(0)}% CONFIDENCE</text>
+
+    <!-- Yellow bounding box -->
     <rect x="${args.rectX}" y="${args.rectY}" width="${args.rectW}" height="${args.rectH}"
-          fill="none" stroke="#ff3333" stroke-width="${strokeWidth}" rx="2" />
+          fill="none" stroke="#FFD600" stroke-width="${strokeWidth}" rx="2" />
+    <!-- Glow effect -->
+    <rect x="${args.rectX}" y="${args.rectY}" width="${args.rectW}" height="${args.rectH}"
+          fill="none" stroke="#FFD600" stroke-width="${strokeWidth + 4}" rx="2" opacity="0.25" />
 
-    <!-- Corner brackets for emphasis -->
+    <!-- Corner brackets -->
     <polyline points="${args.rectX},${args.rectY + bracketLen} ${args.rectX},${args.rectY} ${args.rectX + bracketLen},${args.rectY}"
-              fill="none" stroke="#ffcc00" stroke-width="${strokeWidth + 1}" />
+              fill="none" stroke="#ffffff" stroke-width="${strokeWidth + 1}" />
     <polyline points="${args.rectX + args.rectW - bracketLen},${args.rectY} ${args.rectX + args.rectW},${args.rectY} ${args.rectX + args.rectW},${args.rectY + bracketLen}"
-              fill="none" stroke="#ffcc00" stroke-width="${strokeWidth + 1}" />
+              fill="none" stroke="#ffffff" stroke-width="${strokeWidth + 1}" />
     <polyline points="${args.rectX + args.rectW},${args.rectY + args.rectH - bracketLen} ${args.rectX + args.rectW},${args.rectY + args.rectH} ${args.rectX + args.rectW - bracketLen},${args.rectY + args.rectH}"
-              fill="none" stroke="#ffcc00" stroke-width="${strokeWidth + 1}" />
+              fill="none" stroke="#ffffff" stroke-width="${strokeWidth + 1}" />
     <polyline points="${args.rectX + bracketLen},${args.rectY + args.rectH} ${args.rectX},${args.rectY + args.rectH} ${args.rectX},${args.rectY + args.rectH - bracketLen}"
-              fill="none" stroke="#ffcc00" stroke-width="${strokeWidth + 1}" />
+              fill="none" stroke="#ffffff" stroke-width="${strokeWidth + 1}" />
 
-    <!-- Label pill -->
-    <rect x="${labelX}" y="${labelY}" width="${labelWidth}" height="${labelHeight}"
-          fill="#ff3333" rx="3" opacity="0.92" />
-    <text x="${labelX + labelWidth / 2}" y="${labelY + 15}" fill="white" font-size="11"
-          font-weight="bold" font-family="Arial, sans-serif" text-anchor="middle">${labelText}</text>
+    <!-- Confidence pill above box -->
+    <rect x="${confX}" y="${confY}" width="${confWidth}" height="${confHeight}"
+          fill="#FFD600" rx="3" opacity="0.95" />
+    <text x="${confX + confWidth / 2}" y="${confY + 14}" fill="#000000" font-size="11"
+          font-weight="bold" font-family="Arial, sans-serif" text-anchor="middle">${confText}</text>
+
+    <!-- Bottom bar with location -->
+    <rect x="0" y="${args.height - bottomBarHeight}" width="${args.width}" height="${bottomBarHeight}" fill="#000000" opacity="0.85" />
+    <rect x="0" y="${args.height - bottomBarHeight}" width="${args.width}" height="2" fill="#FFD600" opacity="0.8" />
+    <text x="10" y="${args.height - bottomBarHeight + bottomBarHeight * 0.65}" fill="#FFD600" font-size="${bottomFontSize}"
+          font-weight="bold" font-family="Arial, sans-serif">📍 ${locationText}</text>
+    <text x="${args.width - 10}" y="${args.height - bottomBarHeight + bottomBarHeight * 0.65}" fill="#ffffff" font-size="${Math.round(bottomFontSize * 0.85)}"
+          font-family="Arial, sans-serif" text-anchor="end" opacity="0.5">${timestampText}</text>
   </svg>`;
 }
 
@@ -128,9 +163,10 @@ export async function GET(request: Request) {
   const mode = searchParams.get("mode");
   const imageUrl = searchParams.get("url");
   const confidence = Math.max(0, Math.min(1, Number.parseFloat(searchParams.get("confidence") || "0.5")));
-  const label = (searchParams.get("label") || "BOLO MATCH").slice(0, 40);
+  const label = (searchParams.get("label") || "SUSPECT VEHICLE FOUND").slice(0, 40);
   const cameraId = searchParams.get("cameraId") || "unknown-camera";
   const cameraName = searchParams.get("cameraName") || "Unknown Camera";
+  const location = searchParams.get("location") || cameraName;
   const frameCapturedAt = new Date().toISOString();
 
   const dir = proofsDir();
@@ -188,6 +224,7 @@ export async function GET(request: Request) {
         radius,
         label,
         confidence,
+        location,
       });
       annotated = await sharp(imageBuffer)
         .composite([{ input: Buffer.from(overlaySvg), top: 0, left: 0 }])

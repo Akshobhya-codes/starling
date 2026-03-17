@@ -107,6 +107,25 @@ export default function BoloPanel({ bolos, onFlyTo, onClear, onOpenCamera }: Bol
                   <div className="space-y-1.5 mb-2">
                     {bolo.sightings.slice().reverse().map((s) => (
                       <div key={s.id} className="bg-white/[0.03] border border-white/[0.05] rounded overflow-hidden">
+                        {/* Proof image thumbnail — shown inline when available */}
+                        {s.proofImageUrl && (
+                          <button
+                            onClick={() => setProofImage({ url: s.proofImageUrl!, location: s.location })}
+                            className="w-full relative group cursor-pointer"
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={s.proofImageUrl}
+                              alt={`Suspect vehicle at ${s.location}`}
+                              className="w-full h-auto object-cover"
+                            />
+                            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center">
+                              <span className="opacity-0 group-hover:opacity-100 text-[10px] font-mono text-white bg-black/60 px-2 py-1 rounded transition-opacity">
+                                EXPAND PROOF
+                              </span>
+                            </div>
+                          </button>
+                        )}
                         <button
                           onClick={() => onFlyTo?.(s.lat, s.lng)}
                           className="w-full flex items-start gap-2 px-2 py-1.5 text-left hover:bg-white/[0.05] transition-colors"
@@ -118,22 +137,22 @@ export default function BoloPanel({ bolos, onFlyTo, onClear, onOpenCamera }: Bol
                           )}
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-1.5">
-                              <MapPin size={8} className="text-white/20 shrink-0" />
+                              <MapPin size={8} className="text-yellow-400/50 shrink-0" />
                               <span className="text-[9px] font-mono text-white/60 truncate">{s.location}</span>
                             </div>
                             <p className="text-[8px] font-mono text-white/35 mt-0.5 line-clamp-2">{s.details}</p>
                           </div>
                           <div className="text-right shrink-0">
                             <div className="text-[8px] font-mono text-white/20">{timeAgo(s.timestamp)}</div>
-                            <div className="text-[7px] font-mono text-white/15">{Math.round(s.confidence * 100)}%</div>
+                            <div className="text-[7px] font-mono text-yellow-400/60 font-bold">{Math.round(s.confidence * 100)}%</div>
                           </div>
                         </button>
-                        {/* Proof & camera actions */}
+                        {/* Actions row */}
                         <div className="flex items-center gap-1 px-2 py-1 border-t border-white/[0.04]">
                           {s.proofImageUrl && (
                             <button
                               onClick={() => setProofImage({ url: s.proofImageUrl!, location: s.location })}
-                              className="flex items-center gap-1 px-1.5 py-0.5 text-[7px] font-mono text-amber-400/60 hover:text-amber-400 bg-amber-400/5 hover:bg-amber-400/10 rounded transition-colors"
+                              className="flex items-center gap-1 px-1.5 py-0.5 text-[7px] font-mono text-yellow-400/60 hover:text-yellow-400 bg-yellow-400/5 hover:bg-yellow-400/10 rounded transition-colors"
                             >
                               <Image size={8} />
                               VIEW PROOF
@@ -190,11 +209,11 @@ export default function BoloPanel({ bolos, onFlyTo, onClear, onOpenCamera }: Bol
             className="relative max-w-[80vw] max-h-[80vh] bg-[#0a0a0f] border border-white/[0.1] rounded-lg overflow-hidden shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between px-3 py-2 border-b border-white/[0.06]">
+            <div className="flex items-center justify-between px-3 py-2 border-b border-yellow-400/20 bg-yellow-400/5">
               <div className="flex items-center gap-2">
-                <Crosshair size={10} className="text-red-400" />
-                <span className="text-[10px] font-mono text-white/60">BOLO PROOF</span>
-                <span className="text-[9px] font-mono text-white/30">{proofImage.location}</span>
+                <Crosshair size={10} className="text-yellow-400" />
+                <span className="text-[10px] font-mono text-yellow-400 font-bold tracking-wider">⚠ SUSPECT VEHICLE FOUND</span>
+                <span className="text-[9px] font-mono text-white/40">{proofImage.location}</span>
               </div>
               <button
                 onClick={() => setProofImage(null)}

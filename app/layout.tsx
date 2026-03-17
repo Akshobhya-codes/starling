@@ -8,8 +8,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SF OSINT Fusion Center",
-  description: "Real-time urban situational awareness for San Francisco",
+  title: "Starling — Nemo Operations Center",
+  description: "AI-powered crime analysis and operations platform powered by NVIDIA Nemotron",
 };
 
 export default function RootLayout({

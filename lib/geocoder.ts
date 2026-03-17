@@ -173,7 +173,7 @@ export async function geocodeLocation(
     const res = await fetch(
       `https://nominatim.openstreetmap.org/search?${params}`,
       {
-        headers: { "User-Agent": "SF-OSINT-Hackathon/1.0" },
+        headers: { "User-Agent": "Starling-Nemo/1.0" },
         signal: AbortSignal.timeout(5000),
       }
     );

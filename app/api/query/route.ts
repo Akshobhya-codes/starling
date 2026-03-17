@@ -1,14 +1,18 @@
 import { NextResponse } from "next/server";
-import Groq from "groq-sdk";
-import { startEngine } from "@/lib/engine";
+import OpenAI from "openai";
+import { startEngine, toggleFeature } from "@/lib/engine";
 import { createBolo } from "@/lib/bolo";
 import { store } from "@/lib/store";
 import { sseBroker } from "@/lib/sse";
 
 export const dynamic = "force-dynamic";
 
-const groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY || "" });
-const GROQ_MODEL_QUERY = "llama-3.3-70b-versatile";
+// NVIDIA Nemotron via OpenAI-compatible NIM API — Nemo's reasoning brain
+const nvidiaClient = new OpenAI({
+  baseURL: "https://integrate.api.nvidia.com/v1",
+  apiKey: process.env.NVIDIA_API_KEY || "",
+});
+const NEMOTRON_MODEL = process.env.NEMOTRON_TEXT_MODEL || "nvidia/llama-3.1-nemotron-70b-instruct";
 
 type ThreatLevel = "low" | "moderate" | "elevated" | "high" | "critical";
 
@@ -37,7 +41,7 @@ function buildStatusResult(): QueryResult {
   const activeBolos = store.getActiveBolos();
   const hypotheses = store.getActiveHypotheses();
   return {
-    answer: `System status:\n• ${hypotheses.length} active incident(s)\n• ${activeBolos.length} active BOLO(s)\n• ${store.cameras.size} cameras available`,
+    answer: `Nemo status report:\n• ${hypotheses.length} active incident(s)\n• ${activeBolos.length} active BOLO(s)\n• ${store.cameras.size} cameras online\n\nAll systems operational. Standing by for orders.`,
     flyTo: null,
     highlightIds: [],
     filterType: null,
@@ -48,7 +52,7 @@ function buildStatusResult(): QueryResult {
 
 function buildHelpResult(): QueryResult {
   return {
-    answer: "Commands:\n• /bolo <description>\n• /track <description>\n• /find <description>\n• /clear <bolo_id | all>\n• /status\n• /help",
+    answer: "Nemo command reference:\n• /bolo <description> — Issue a vehicle BOLO alert\n• /track <description> — Track a vehicle\n• /find <description> — Search for a vehicle\n• /clear <bolo_id | all> — Clear BOLO alert(s)\n• /status — System status report\n• /help — Show this help\n\nYou can also ask me anything in natural language. I'll analyze the situation and take appropriate action.",
     flyTo: null,
     highlightIds: [],
     filterType: null,
@@ -59,15 +63,22 @@ function buildHelpResult(): QueryResult {
 
 function buildBoloResult(command: string): QueryResult {
   const bolo = createBolo(command);
+
+  // Auto-enable cameras so the BOLO scan loop starts immediately
+  if (!store.features.cameras) {
+    toggleFeature("cameras", true);
+  }
+
   return {
-    answer: `BOLO issued for ${bolo.description}. Camera analysis will watch for matches and sightings will appear in the BOLO panel.`,
+    answer: `BOLO issued. I'm now actively scanning ${store.cameras.size} camera feeds for: ${bolo.description}.\n\nCameras are ONLINE. I'll alert you immediately when a match is detected with annotated proof images showing the suspect vehicle highlighted.`,
     flyTo: null,
     highlightIds: [],
     filterType: null,
     threatLevel: "elevated",
     recommendations: [
-      `Tracking ${bolo.description}`,
-      "Watch the BOLO tab for sightings",
+      `Tracking: ${bolo.description}`,
+      "Monitor the BOLO tab for sightings with proof images",
+      `${store.cameras.size} cameras actively scanning`,
     ],
     bolo,
   };
@@ -80,18 +91,18 @@ function clearBolo(target: string): QueryResult {
       store.bolos.set(bolo.id, bolo);
       sseBroker.broadcast("bolo:cleared", bolo);
     }
-    return fallbackResult("All BOLOs cleared.");
+    return fallbackResult("All BOLOs cleared. Camera scanning will return to normal operations.");
   }
 
   const bolo = store.bolos.get(target);
   if (!bolo) {
-    return fallbackResult(`No BOLO found for "${target}".`);
+    return fallbackResult(`No BOLO found for "${target}". Use /status to see active BOLOs.`);
   }
 
   bolo.status = "cleared";
   store.bolos.set(bolo.id, bolo);
   sseBroker.broadcast("bolo:cleared", bolo);
-  return fallbackResult(`BOLO "${bolo.description}" cleared.`);
+  return fallbackResult(`BOLO cleared: "${bolo.description}". Scanning stopped for this target.`);
 }
 
 function maybeParseJson(text: string): QueryResult | null {
@@ -151,6 +162,8 @@ export async function POST(request: Request) {
     return NextResponse.json(buildBoloResult(trimmedQuery));
   }
 
+  // ── Nemotron reasoning: Nemo agent processes the query ──
+
   const hypotheses = store.getActiveHypotheses();
   const activeBolos = store.getActiveBolos();
 
@@ -181,31 +194,50 @@ export async function POST(request: Request) {
     lastSighting: bolo.sightings.length > 0 ? bolo.sightings[bolo.sightings.length - 1] : null,
   }));
 
-  const prompt = [
-    "You are an analyst for an SF operations map. Answer questions concisely and tactically using only the provided data.",
+  const systemPrompt = [
+    "You are Nemo, an AI operations analyst for the Starling crime analysis and operations platform.",
+    "You assist law enforcement and public safety operators in San Francisco.",
+    "You are tactical, concise, and decisive. You think like an analyst, not a chatbot.",
+    "When operators ask questions, you reason about the situation using the available data and provide actionable intelligence.",
+    "",
+    "Your capabilities:",
+    "- Analyze active incidents and their severity/confidence",
+    "- Track vehicles via the BOLO system",
+    "- Navigate the operator to locations on the map",
+    "- Assess threat levels and recommend actions",
+    "- Summarize the current operational picture",
+    "",
     "Return ONLY valid JSON in this format:",
     '{"answer":"string","flyTo":{"lat":number,"lng":number}|null,"highlightIds":["id"],"filterType":"accident"|"fire"|"congestion"|"construction"|"medical"|"hazard"|"police"|"road_closure"|null,"threatLevel":"low"|"moderate"|"elevated"|"high"|"critical","recommendations":["string"]}',
-    "Rules:",
-    "- Do not invent incidents or locations.",
-    "- Only set flyTo when the user explicitly asks to show, zoom, go, fly, or navigate to an incident already in the data.",
-    "- highlightIds should contain relevant incident ids when applicable.",
-    "- recommendations should be 0-3 short actions.",
-    "- threatLevel should reflect the most serious current situation.",
     "",
+    "Rules:",
+    "- Do not invent incidents or locations not in the data.",
+    "- Only set flyTo when the operator explicitly asks to navigate/show/zoom to a location.",
+    "- highlightIds should contain relevant incident ids when applicable.",
+    "- recommendations should be 0-3 short tactical actions.",
+    "- threatLevel should reflect the most serious current situation.",
+    "- Speak like a professional operations analyst. Be direct and helpful.",
+  ].join("\n");
+
+  const userMessage = [
     "Active incidents:",
     JSON.stringify(hypothesesSummary, null, 2),
     "",
     "Active BOLOs:",
     JSON.stringify(boloSummary, null, 2),
     "",
-    `User query: ${trimmedQuery}`,
+    `Operator query: ${trimmedQuery}`,
   ].join("\n");
 
   try {
-    const response = await groqClient.chat.completions.create({
-      model: GROQ_MODEL_QUERY,
-      messages: [{ role: "user", content: prompt }],
+    const response = await nvidiaClient.chat.completions.create({
+      model: NEMOTRON_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userMessage },
+      ],
       temperature: 0.2,
+      max_tokens: 1024,
     });
 
     const text = response.choices[0]?.message?.content ?? "";
@@ -214,8 +246,8 @@ export async function POST(request: Request) {
       return NextResponse.json(parsed);
     }
   } catch (error) {
-    console.error("[Query] Error:", error);
+    console.error("[Nemo] Nemotron query error:", error);
   }
 
-  return NextResponse.json(fallbackResult("I could not process that request from the current incident data."));
+  return NextResponse.json(fallbackResult("Nemo could not process that request from the current operational data. Try rephrasing or use /help for available commands."));
 }

@@ -43,7 +43,7 @@ function logEngine(level: "info" | "warn" | "error", message: string) {
 }
 
 function hasVisionProviderConfigured(): boolean {
-  return Boolean(process.env.GEMINI_API_KEY || process.env.TOGETHER_API_KEY || process.env.GROQ_API_KEY);
+  return Boolean(process.env.NVIDIA_API_KEY || process.env.GEMINI_API_KEY);
 }
 
 const globalForEngine = globalThis as unknown as {
@@ -60,7 +60,7 @@ if (!globalForEngine.__intervals) {
 export function startEngine() {
   if (globalForEngine.__engineStarted) return;
   globalForEngine.__engineStarted = true;
-  console.log("[Engine] Starting SF OSINT Fusion Center (core only)...");
+  console.log("[Engine] Starting Starling Operations Center (Nemo engine)...");
   logEngine("info", "Engine starting");
 
   // Initialize road segments
@@ -110,6 +110,7 @@ export function toggleFeature(feature: keyof FeatureFlags, enabled: boolean) {
 
   console.log(`[Engine] Feature "${feature}" ${enabled ? "ENABLED" : "DISABLED"}`);
   logEngine("info", `Feature ${feature} ${enabled ? "enabled" : "disabled"}`);
+  sseBroker.broadcast("features", store.features);
 }
 
 function startFeature(feature: keyof FeatureFlags) {
@@ -268,7 +269,8 @@ function buildProofImageUrl(cam: CameraInfo, sightingId: string, confidence: num
     cameraId: cam.id,
     cameraName: cam.name,
     confidence: String(confidence),
-    label: "BOLO MATCH",
+    label: "SUSPECT VEHICLE FOUND",
+    location: cam.name,
   });
   if (bbox && bbox.length === 4) {
     const normalized = normalizeBbox(bbox);
@@ -579,8 +581,8 @@ async function processCamera(cam: CameraInfo) {
 
 async function startCameraLoop() {
   if (!hasVisionProviderConfigured()) {
-    console.log("[Camera] No vision provider key - camera analysis disabled");
-    logEngine("warn", "Camera analysis disabled (missing GEMINI_API_KEY/TOGETHER_API_KEY/GROQ_API_KEY)");
+    console.log("[Nemo] No vision provider key - camera analysis disabled");
+    logEngine("warn", "Camera analysis disabled (missing NVIDIA_API_KEY or GEMINI_API_KEY)");
     return;
   }
 
