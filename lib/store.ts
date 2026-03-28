@@ -35,7 +35,7 @@ class Store {
   }
 
   getActiveBolos(): Bolo[] {
-    return Array.from(this.bolos.values()).filter((b) => b.status !== "cleared");
+    return Array.from(this.bolos.values()).filter((b) => b.status !== "cleared" && b.status !== "paused");
   }
 
   updateFeedStatus() {

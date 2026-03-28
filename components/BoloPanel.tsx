@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Crosshair, MapPin, Trash2, Eye, Radio, Camera, Image } from "lucide-react";
+import { Crosshair, MapPin, Trash2, Eye, Radio, Camera, Image, Pause, Play } from "lucide-react";
 import { Bolo } from "@/lib/types";
 
 interface BoloPanelProps {
@@ -17,6 +17,7 @@ const STATUS_STYLES: Record<Bolo["status"], { bg: string; text: string; dot: str
   confirmed: { bg: "bg-red-500/10", text: "text-red-400", dot: "bg-red-400", label: "CONFIRMED" },
   sighted: { bg: "bg-red-500/10", text: "text-red-400", dot: "bg-red-400", label: "SIGHTED" },
   cleared: { bg: "bg-white/5", text: "text-white/30", dot: "bg-white/20", label: "CLEARED" },
+  paused: { bg: "bg-blue-500/10", text: "text-blue-400", dot: "bg-blue-400", label: "PAUSED" },
 };
 
 function timeAgo(ts: string): string {
@@ -32,6 +33,8 @@ export default function BoloPanel({ bolos, onFlyTo, onClear, onOpenCamera }: Bol
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const active = bolos.filter((b) => b.status !== "cleared");
   const cleared = bolos.filter((b) => b.status === "cleared");
+  // Sort: paused BOLOs go to bottom
+  active.sort((a, b) => (a.status === "paused" ? 1 : 0) - (b.status === "paused" ? 1 : 0));
 
   if (bolos.length === 0) {
     return (
@@ -177,13 +180,25 @@ export default function BoloPanel({ bolos, onFlyTo, onClear, onOpenCamera }: Bol
                   </p>
                 )}
 
-                <button
-                  onClick={() => onClear?.(bolo.id)}
-                  className="flex items-center gap-1.5 px-2 py-1 text-[8px] font-mono text-red-400/40 hover:text-red-400/70 transition-colors"
-                >
-                  <Trash2 size={8} />
-                  CANCEL BOLO
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      const newStatus = bolo.status === "paused" ? "active" : "paused";
+                      fetch("/api/bolo", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: bolo.id, status: newStatus }) });
+                    }}
+                    className={`flex items-center gap-1.5 px-2 py-1 text-[8px] font-mono transition-colors ${bolo.status === "paused" ? "text-green-400/60 hover:text-green-400" : "text-blue-400/40 hover:text-blue-400/70"}`}
+                  >
+                    {bolo.status === "paused" ? <Play size={8} /> : <Pause size={8} />}
+                    {bolo.status === "paused" ? "RESUME" : "PAUSE"}
+                  </button>
+                  <button
+                    onClick={() => onClear?.(bolo.id)}
+                    className="flex items-center gap-1.5 px-2 py-1 text-[8px] font-mono text-red-400/40 hover:text-red-400/70 transition-colors"
+                  >
+                    <Trash2 size={8} />
+                    CANCEL
+                  </button>
+                </div>
               </div>
             )}
           </div>

@@ -45,7 +45,7 @@ function logEngine(level: "info" | "warn" | "error", message: string) {
 }
 
 function hasVisionProviderConfigured(): boolean {
-  return Boolean(process.env.GROQ_API_KEY || process.env.NVIDIA_API_KEY || process.env.GEMINI_API_KEY);
+  return Boolean(process.env.OPENAI_API_KEY || process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY);
 }
 
 const globalForEngine = globalThis as unknown as {
@@ -587,7 +587,7 @@ async function processCamera(cam: CameraInfo) {
 async function startCameraLoop() {
   if (!hasVisionProviderConfigured()) {
     console.log("[Nemo] No vision provider key - camera analysis disabled");
-    logEngine("warn", "Camera analysis disabled (missing NVIDIA_API_KEY or GEMINI_API_KEY)");
+    logEngine("warn", "Camera analysis disabled (missing GROQ_API_KEY or GEMINI_API_KEY)");
     return;
   }
 
@@ -779,6 +779,9 @@ async function runLegacyValidationScan(cams: CameraInfo[]) {
   return hits;
 }
 
+// Dedup map: "boloId_cameraId" → last sighting timestamp
+const boloScanDedup = new Map<string, number>();
+
 async function runBoloScanBatch() {
   const activeBolos = store.getActiveBolos();
   if (activeBolos.length === 0) return;
@@ -789,7 +792,8 @@ async function runBoloScanBatch() {
     return;
   }
 
-  const BATCH_SIZE = 15;
+  // OpenAI Tier 1: 500 RPM — scan 10 cameras per cycle
+  const BATCH_SIZE = 10;
   const totalCamsPerCycle = Math.min(BATCH_SIZE, allCams.length);
   const cycleCams: CameraInfo[] = [];
   for (let i = 0; i < totalCamsPerCycle; i++) {
@@ -799,25 +803,50 @@ async function runBoloScanBatch() {
 
   console.log(`[BOLO Scan] Scanning ${totalCamsPerCycle} cameras for ${activeBolos.length} BOLO(s): ${activeBolos.map(b => b.description).join(", ")}`);
 
-  // Scan all cameras in parallel for maximum speed
-  const scanResults = await Promise.allSettled(
-    cycleCams.map(async (cam) => {
-      const result = await batchBoloScan([{ name: cam.name, imageUrl: cam.imageUrl }], activeBolos);
-      return { cam, matches: result.matches };
-    })
+  // Sequential scan — batchBoloScan handles OpenAI→Gemini fallback per camera
+  const scanResult = await batchBoloScan(
+    cycleCams.map(c => ({ name: c.name, imageUrl: c.imageUrl })),
+    activeBolos
   );
 
-  for (const r of scanResults) {
-    if (r.status !== "fulfilled") continue;
-    for (const match of r.value.matches) {
-      const matchCam = r.value.cam;
-      // Try exact match first, then fuzzy (AI sometimes returns partial ID)
+  const camByName = new Map(cycleCams.map(c => [c.name, c]));
+
+  for (const match of scanResult.matches) {
+    const matchCam = camByName.get(match.cameraName);
+    if (!matchCam) continue;
+    {
+      // Dedup: skip if same BOLO was already sighted at this camera recently (5 min cooldown)
+      const dedupKey = `${match.boloId}_${matchCam.id}`;
+      const lastSeen = boloScanDedup.get(dedupKey);
+      if (lastSeen && Date.now() - lastSeen < 300000) {
+        console.log(`[BOLO Scan] Dedup skip: ${match.boloId} at ${matchCam.name} (seen ${Math.round((Date.now()-lastSeen)/1000)}s ago)`);
+        continue;
+      }
+
+      // Match boloId: exact → partial → by description keywords
       let bolo = store.bolos.get(match.boloId);
       if (!bolo) {
         bolo = activeBolos.find(b => b.id.includes(match.boloId) || match.boloId.includes(b.id)) || undefined;
       }
+      if (!bolo) {
+        // AI sometimes returns wrong ID — match by details/description keywords
+        const details = (match.details || "").toLowerCase();
+        bolo = activeBolos.find(b => {
+          const desc = (b.description || "").toLowerCase();
+          const color = (b.color || "").toLowerCase();
+          return (color && details.includes(color)) || (desc && details.includes(desc));
+        }) || undefined;
+        if (bolo) console.log(`[BOLO Scan] Fuzzy matched "${match.boloId}" → ${bolo.id} via description`);
+      }
+      if (!bolo) {
+        // Last resort: if only 1 active BOLO, assign to it
+        if (activeBolos.length === 1) {
+          bolo = activeBolos[0];
+          console.log(`[BOLO Scan] Only 1 active BOLO, assigning match to ${bolo.id}`);
+        }
+      }
       if (!bolo || bolo.status === "cleared") continue;
-      if ((match.confidence || 0) < 0.65) {
+      if ((match.confidence || 0) < 0.80) {
         console.log(`[BOLO Scan] Low confidence (${match.confidence}) skipped at ${matchCam.name}`);
         continue;
       }
@@ -832,11 +861,11 @@ async function runBoloScanBatch() {
           const imgBuf = Buffer.from(await imgRes.arrayBuffer());
           const proofsPath = path.join(process.cwd(), "proofs");
           if (!fs.existsSync(proofsPath)) fs.mkdirSync(proofsPath, { recursive: true });
-          fs.writeFileSync(path.join(proofsPath, `${sightingId}.jpg`), imgBuf);
+          fs.writeFileSync(path.join(proofsPath, `${sightingId}-raw.jpg`), imgBuf);
           const bboxStr = match.bbox?.length === 4 ? `&bbox=${match.bbox.join(",")}` : "";
           const centerStr = typeof match.cx === "number" && typeof match.cy === "number"
             ? `&cx=${match.cx.toFixed(1)}&cy=${match.cy.toFixed(1)}` : "";
-          proofUrl = `/api/proof?id=${sightingId}${bboxStr}${centerStr}&label=SUSPECT+VEHICLE+FOUND&location=${encodeURIComponent(matchCam.name)}`;
+          proofUrl = `/api/proof?id=${sightingId}${bboxStr}${centerStr}&confidence=${(match.confidence || 0.5).toFixed(2)}&label=SUSPECT+VEHICLE+FOUND&location=${encodeURIComponent(matchCam.name)}`;
           console.log(`[BOLO Scan] Screenshot saved: ${sightingId}.jpg`);
         }
       } catch {
@@ -863,12 +892,14 @@ async function runBoloScanBatch() {
       bolo.sightings.push(sighting);
       bolo.status = "sighted";
       bolo.lastKnownLocation = matchCam.name;
+      boloScanDedup.set(`${bolo.id}_${matchCam.id}`, Date.now());
       store.bolos.set(bolo.id, bolo);
       sseBroker.broadcast("bolo:sighting", { bolo, sighting });
       console.log(`[BOLO Scan] MATCH! "${bolo.description}" at ${matchCam.name} conf=${match.confidence}`);
     }
   }
 }
+
 
 export function startBoloScanLoop() {
   if (getBoloScanRunning()) return;
@@ -893,7 +924,7 @@ export function startBoloScanLoop() {
 
     if (getBoloScanRunning()) {
       const hasBolos = store.getActiveBolos().length > 0;
-      const nextDelay = hasBolos ? 12000 : 60000;
+      const nextDelay = hasBolos ? 8000 : 60000;
       setBoloScanTimer(setTimeout(tick, nextDelay));
     }
   };

@@ -1,36 +1,20 @@
 import OpenAI from "openai";
-import Groq from "groq-sdk";
 import sharp from "sharp";
 import { CameraAnalysis, Bolo, VehicleAttributes } from "./types";
 
-// ── Vision providers: Groq (primary), Gemini (fallback), Nemotron (fallback) ──
-type VisionProvider = "groq" | "gemini" | "nemotron";
+// ── Vision provider: OpenAI (gpt-4o) ──
+type VisionProvider = "openai";
 
-const NVIDIA_API_BASE = "https://integrate.api.nvidia.com/v1";
-const NEMOTRON_VISION_MODEL = process.env.NEMOTRON_VISION_MODEL || "nvidia/llama-3.2-nv-vision-instruct";
-const GEMINI_MODEL_VISION = process.env.VISION_MODEL_GEMINI || "gemini-2.5-flash";
-const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-const GROQ_VISION_MODEL = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
+const OPENAI_VISION_MODEL = process.env.OPENAI_VISION_MODEL || "gpt-4o";
 
-const nvidiaClient = new OpenAI({
-  baseURL: NVIDIA_API_BASE,
-  apiKey: process.env.NVIDIA_API_KEY || "",
-});
-
-// Groq native SDK for BOLO vision scanning
-const groqNativeClient = new Groq({ apiKey: process.env.GROQ_API_KEY || "" });
-
-const groqClient = new OpenAI({
-  baseURL: "https://api.groq.com/openai/v1",
-  apiKey: process.env.GROQ_API_KEY || "",
+const openaiClient = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY || "",
 });
 
 const VISION_MIN_INTERVAL_MS = 700;
 const RATE_LIMIT_BACKOFF_MS = 8000;
 const providerState: Record<VisionProvider, { nextSlotMs: number }> = {
-  groq: { nextSlotMs: 0 },
-  nemotron: { nextSlotMs: 0 },
-  gemini: { nextSlotMs: 0 },
+  openai: { nextSlotMs: 0 },
 };
 
 interface ParsedCameraAnalysis {
@@ -115,26 +99,16 @@ function getErrorStatus(error: unknown): number | undefined {
 }
 
 function getProviderOrder(): VisionProvider[] {
-  const configured = (process.env.VISION_PROVIDER_ORDER || "groq,gemini,nemotron")
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  const order = configured.filter(
-    (p): p is VisionProvider => p === "groq" || p === "nemotron" || p === "gemini"
-  );
-  return order.length > 0 ? order : ["groq", "gemini", "nemotron"];
+  return ["openai"];
 }
 
 function providerEnabled(provider: VisionProvider): boolean {
-  if (provider === "groq") return Boolean(process.env.GROQ_API_KEY);
-  if (provider === "nemotron") return Boolean(process.env.NVIDIA_API_KEY);
-  if (provider === "gemini") return Boolean(process.env.GEMINI_API_KEY);
+  if (provider === "openai") return Boolean(process.env.OPENAI_API_KEY);
   return false;
 }
 
 function getPrimaryEnabledProvider(): VisionProvider | null {
-  const provider = getProviderOrder().find((p) => providerEnabled(p));
-  return provider || null;
+  return providerEnabled("openai") ? "openai" : null;
 }
 
 async function withRetry<T>(provider: VisionProvider, fn: () => Promise<T>, retries = 2): Promise<T> {
@@ -194,9 +168,16 @@ async function callVisionJson<T>(
   imageSource: string,
   options?: { isUrl?: boolean; maxTokens?: number }
 ): Promise<T | null> {
-  const imageUrl = options?.isUrl ? imageSource : `data:image/jpeg;base64,${imageSource}`;
+  let imageDataUrl: string;
+  if (options?.isUrl) {
+    // Download image and convert to base64 (OpenAI can't fetch Caltrans URLs directly)
+    const imgBuffer = await getImageBuffer(imageSource, true);
+    if (!imgBuffer) return null;
+    imageDataUrl = `data:image/jpeg;base64,${imgBuffer.toString("base64")}`;
+  } else {
+    imageDataUrl = `data:image/jpeg;base64,${imageSource}`;
+  }
   const providers = getProviderOrder();
-  let imageBase64: string | null = null;
   let lastError: unknown = null;
 
   for (const provider of providers) {
@@ -204,17 +185,16 @@ async function callVisionJson<T>(
     try {
       let text = "";
 
-      if (provider === "groq") {
-        // Groq vision (OpenAI-compatible) — primary for BOLO scanning
-        const response = await withRetry("groq", () =>
-          groqClient.chat.completions.create({
-            model: GROQ_VISION_MODEL,
+      if (provider === "openai") {
+        const response = await withRetry("openai", () =>
+          openaiClient.chat.completions.create({
+            model: OPENAI_VISION_MODEL,
             messages: [
               {
                 role: "user",
                 content: [
                   { type: "text", text: prompt + "\n\nRespond with raw JSON only. No markdown, no code fences." },
-                  { type: "image_url", image_url: { url: imageUrl } },
+                  { type: "image_url", image_url: { url: imageDataUrl, detail: "low" } },
                 ],
               },
             ],
@@ -223,68 +203,6 @@ async function callVisionJson<T>(
           })
         );
         text = response.choices[0]?.message?.content ?? "";
-      } else if (provider === "nemotron") {
-        // NVIDIA NIM API (OpenAI-compatible) with vision model
-        const response = await withRetry("nemotron", () =>
-          nvidiaClient.chat.completions.create({
-            model: NEMOTRON_VISION_MODEL,
-            messages: [
-              {
-                role: "system",
-                content: "You are Nemo, an AI operations analyst. Output raw JSON with no explanation, no markdown, no code fences.",
-              },
-              {
-                role: "user",
-                content: [
-                  { type: "text", text: prompt },
-                  { type: "image_url", image_url: { url: imageUrl } },
-                ],
-              },
-            ],
-            max_tokens: options?.maxTokens ?? 512,
-            temperature: 0.1,
-          })
-        );
-        text = response.choices[0]?.message?.content ?? "";
-      } else if (provider === "gemini") {
-        if (!imageBase64) {
-          const imageBuffer = await getImageBuffer(imageSource, Boolean(options?.isUrl));
-          imageBase64 = imageBuffer ? imageBuffer.toString("base64") : null;
-        }
-        if (!imageBase64) {
-          throw new Error("Unable to prepare image payload for Gemini");
-        }
-        const response = await withRetry("gemini", async () => {
-          const url = `${GEMINI_API_BASE}/${encodeURIComponent(GEMINI_MODEL_VISION)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY || "")}`;
-          const res = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [
-                {
-                  role: "user",
-                  parts: [
-                    { text: prompt },
-                    { inline_data: { mime_type: "image/jpeg", data: imageBase64 } },
-                  ],
-                },
-              ],
-              generationConfig: {
-                maxOutputTokens: Math.max(2048, options?.maxTokens ?? 2048),
-                temperature: 0.1,
-                responseMimeType: "application/json",
-              },
-            }),
-          });
-          if (!res.ok) {
-            const bodyText = await res.text();
-            throw { status: res.status, message: bodyText || `Gemini API error ${res.status}` };
-          }
-          return res.json() as Promise<{
-            candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-          }>;
-        });
-        text = response.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("\n") || "";
       }
 
       const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -300,7 +218,7 @@ async function callVisionJson<T>(
   if (lastError) {
     throw lastError;
   }
-  throw new Error("No vision provider configured. Set NVIDIA_API_KEY or GEMINI_API_KEY.");
+  throw new Error("No vision provider configured. Set OPENAI_API_KEY.");
 }
 
 async function getImageBuffer(imageSource: string, isUrl: boolean): Promise<Buffer | null> {
@@ -607,127 +525,94 @@ export interface BoloScanResult {
   }>;
 }
 
-async function geminiBatchBoloScan(
-  cameras: Array<{ name: string; imageUrl: string }>,
-  activeBolos: Bolo[]
-): Promise<BoloScanResult["matches"]> {
-  const buffers = await Promise.all(
-    cameras.map(async (camera) => ({
-      camera,
-      buffer: await getImageBuffer(camera.imageUrl, true),
-    }))
-  );
-  const valid = buffers.filter((entry) => entry.buffer !== null);
-  console.log(`[Nemo BOLO] ${valid.length}/${cameras.length} cameras have valid images`);
-  if (valid.length === 0) return [];
+const GEMINI_BOLO_MODEL = process.env.GEMINI_BOLO_MODEL || "gemini-2.0-flash";
+const GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
-  const boloDescription = activeBolos
-    .map((b) => {
-      const attrs = [b.color, b.make, b.model, b.plate ? `plate=${b.plate}` : null].filter(Boolean).join(" ");
-      return `- ${b.id}: ${b.description}${attrs ? ` [${attrs}]` : ""}`;
-    })
-    .join("\n");
+// ── OpenAI RPM tracker: use OpenAI first, overflow to Gemini ──
+const OPENAI_RPM_LIMIT = 500;
+const openaiCallLog: number[] = [];
 
-  const cIndexToName = new Map<string, string>();
-  for (let i = 0; i < valid.length; i++) {
-    cIndexToName.set(`C${i + 1}`, valid[i].camera.name);
-    cIndexToName.set(`c${i + 1}`, valid[i].camera.name);
+function canUseOpenAI(): boolean {
+  if (!process.env.OPENAI_API_KEY) return false;
+  const now = Date.now();
+  // Remove calls older than 60s
+  while (openaiCallLog.length > 0 && openaiCallLog[0] < now - 60000) {
+    openaiCallLog.shift();
   }
+  return openaiCallLog.length < OPENAI_RPM_LIMIT;
+}
 
-  const cameraLines = valid
-    .map((entry, idx) => `- Image ${idx + 1} = "${entry.camera.name}"`)
-    .join("\n");
+function recordOpenAICall(): void {
+  openaiCallLog.push(Date.now());
+}
 
-  const prompt = [
-    "Scan traffic cameras for BOLO vehicle matches. Report the BEST match per camera (max 1 per camera).",
-    "Return JSON (use exact camera name string):",
-    '{"matches":[{"cameraName":"exact camera name","boloId":"id","confidence":0.0,"details":"brief","bbox":[ymin,xmin,ymax,xmax],"attributes":{"primaryColor":"color","bodyType":"type"}}]}',
-    "bbox=percentage 0-100. If none: {\"matches\":[]}.",
-    "BOLOs:", boloDescription,
-    "Cameras:", cameraLines,
-    'Car=sedan. White/silver/gray/beige count as "white" match.',
-  ].join("\n");
+function buildBoloPrompt(camName: string, boloDescriptions: string): string {
+  return `BOLO VEHICLE SCAN - Camera: "${camName}"
 
-  const response = await withRetry("gemini", async () => {
-    const url = `${GEMINI_API_BASE}/${encodeURIComponent(GEMINI_MODEL_VISION)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY || "")}`;
-    const parts: Array<{ text?: string; inline_data?: { mime_type: string; data: string } }> = [{ text: prompt }];
-    for (let i = 0; i < valid.length; i++) {
-      parts.push({ text: `CAMERA C${i + 1}: ${valid[i].camera.name}` });
-      parts.push({
-        inline_data: {
-          mime_type: "image/jpeg",
-          data: valid[i].buffer!.toString("base64"),
-        },
-      });
-    }
+Active BOLO targets:
+${boloDescriptions}
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts }],
-        generationConfig: {
-          maxOutputTokens: 8192,
-          temperature: 0.2,
-          responseMimeType: "application/json",
-        },
-      }),
-    });
-    if (!res.ok) {
-      const bodyText = await res.text();
-      throw { status: res.status, message: bodyText || `Gemini API error ${res.status}` };
-    }
-    return res.json() as Promise<{
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    }>;
+STRICT RULES — READ CAREFULLY:
+1. ONLY report a vehicle if its COLOR actually matches the BOLO. A white car is NOT red. A silver car is NOT black. Be very strict about color matching.
+2. The boloId MUST be the EXACT full ID from the list above — copy it exactly, do NOT shorten or modify it
+3. bbox must cover the ENTIRE matching vehicle bumper-to-bumper [ymin,xmin,ymax,xmax] as percentages 0-100
+4. cx, cy = center of vehicle as percentage from top-left
+5. confidence 0.85+ ONLY — do not report uncertain matches
+6. If you cannot clearly confirm the color matches, return empty matches
+7. FALSE POSITIVES ARE UNACCEPTABLE — only report if you are highly confident the color and vehicle type match
+
+Return ONLY raw JSON, no markdown, no code fences:
+{"matches":[{"boloId":"EXACT_FULL_ID","confidence":0.9,"details":"red sedan in center lane heading east","bbox":[40,25,65,45],"cx":35.0,"cy":52.0}]}
+Empty: {"matches":[]}`;
+}
+
+async function scanWithOpenAI(prompt: string, imgBase64: string): Promise<string> {
+  recordOpenAICall();
+  const response = await openaiClient.chat.completions.create({
+    model: OPENAI_VISION_MODEL,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "text", text: prompt },
+        { type: "image_url", image_url: { url: `data:image/jpeg;base64,${imgBase64}`, detail: "low" } },
+      ],
+    }],
+    max_tokens: 512,
+    temperature: 0.1,
   });
+  return response.choices[0]?.message?.content ?? "";
+}
 
-  const text = response.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("\n") || "";
-  console.log(`[Nemo BOLO Gemini] raw response (${text.length} chars): ${text.slice(0, 500)}`);
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    console.log("[Nemo BOLO] no JSON found in response");
-    return [];
+async function scanWithGemini(prompt: string, imgBase64: string): Promise<string> {
+  const geminiKey = process.env.GEMINI_API_KEY;
+  if (!geminiKey) throw new Error("No GEMINI_API_KEY");
+  const url = `${GEMINI_API_BASE}/${encodeURIComponent(GEMINI_BOLO_MODEL)}:generateContent?key=${encodeURIComponent(geminiKey)}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{
+        role: "user",
+        parts: [
+          { text: prompt },
+          { inline_data: { mime_type: "image/jpeg", data: imgBase64 } },
+        ],
+      }],
+      generationConfig: {
+        maxOutputTokens: 512,
+        temperature: 0.1,
+        responseMimeType: "application/json",
+      },
+    }),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Gemini ${res.status}: ${errText.slice(0, 200)}`);
   }
-
-  let parsed: ParsedBoloScanResponse | null = null;
-  try {
-    parsed = JSON.parse(jsonMatch[0]) as ParsedBoloScanResponse;
-  } catch (e) {
-    console.warn("[Nemo BOLO] JSON parse failed:", (e as Error).message);
-    return [];
-  }
-
-  const cameraNames = new Set(cameras.map((c) => c.name));
-  const boloIds = new Set(activeBolos.map((b) => b.id));
-
-  const resolveCameraName = (raw?: string): string | null => {
-    if (!raw) return null;
-    if (cameraNames.has(raw)) return raw;
-    if (cIndexToName.has(raw)) return cIndexToName.get(raw)!;
-    const stripped = raw.replace(/^C\d+:\s*/, "").replace(/^Image\s+\d+\s*[:=]\s*"?/i, "").replace(/"$/, "");
-    if (cameraNames.has(stripped)) return stripped;
-    for (const name of cameraNames) {
-      if (raw.includes(name) || name.includes(stripped)) return name;
-    }
-    return null;
+  const geminiResponse = await res.json() as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
   };
-
-  const matches = (parsed.matches || [])
-    .filter((m) => {
-      const resolved = resolveCameraName(m.cameraName);
-      return resolved && m.boloId && boloIds.has(m.boloId);
-    })
-    .map((m) => ({
-      cameraName: resolveCameraName(m.cameraName) as string,
-      boloId: m.boloId as string,
-      confidence: Math.max(0, Math.min(1, m.confidence ?? 0.5)),
-      details: m.details || "Batch visual match",
-      bbox: normalizeBboxValues(m.bbox),
-      attributes: m.attributes,
-    }));
-
-  return matches;
+  return geminiResponse.candidates?.[0]?.content?.parts?.map(p => p.text || "").join("") || "";
 }
 
 export async function batchBoloScan(
@@ -735,6 +620,11 @@ export async function batchBoloScan(
   activeBolos: Bolo[]
 ): Promise<BoloScanResult> {
   if (cameras.length === 0 || activeBolos.length === 0) {
+    return { matches: [] };
+  }
+
+  if (!process.env.OPENAI_API_KEY) {
+    console.warn("[BOLO] No OPENAI_API_KEY — BOLO scanning disabled");
     return { matches: [] };
   }
 
@@ -751,47 +641,53 @@ export async function batchBoloScan(
 
   for (const cam of cameras) {
     try {
-      const prompt = `BOLO SCAN - Camera: "${cam.name}"\n\nTargets to find:\n${boloDescriptions}\n\nInstructions:\n- Only report if you can CLEARLY see the described vehicle/person\n- bbox: tightest box around the vehicle body only — NOT the whole image\n- cx, cy: the EXACT CENTER of the vehicle in the image, as percentages from top-left. This must be precise.\n- confidence >= 0.75 required to report\n- Return empty if unsure or no match\n\nReturn ONLY JSON:\n{"matches":[{"boloId":"exact_id","confidence":0.9,"details":"what you see","bbox":[ymin,xmin,ymax,xmax],"cx":45.2,"cy":61.8}]}\nAll values 0-100 (percentages). Empty: {"matches":[]}`;
+      const imgBuffer = await getImageBuffer(cam.imageUrl, true);
+      if (!imgBuffer) {
+        console.log(`[BOLO] ${cam.name} skipped (could not download image)`);
+        continue;
+      }
+      const imgBase64 = imgBuffer.toString("base64");
+      const prompt = buildBoloPrompt(cam.name, boloDescriptions);
 
-      const response = await withRetry("groq", () =>
-        groqNativeClient.chat.completions.create({
-          model: GROQ_VISION_MODEL,
-          messages: [{
-            role: "user",
-            content: [
-              { type: "text", text: prompt },
-              { type: "image_url", image_url: { url: cam.imageUrl } },
-            ],
-          }],
-          max_tokens: 256,
-        })
-      );
+      console.log(`[BOLO] Scanning ${cam.name} via OpenAI...`);
+      const text = await scanWithOpenAI(prompt, imgBase64);
+      console.log(`[BOLO] ${cam.name} response: ${text.slice(0, 200)}`);
 
-      const text = response.choices[0]?.message?.content ?? "";
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (parsed.matches && parsed.matches.length > 0) {
-          for (const m of parsed.matches) {
-            const bbox = normalizeBboxValues(m.bbox);
-            const cx = typeof m.cx === "number" ? m.cx
-              : bbox ? (bbox[1] + bbox[3]) / 2 : undefined;
-            const cy = typeof m.cy === "number" ? m.cy
-              : bbox ? (bbox[0] + bbox[2]) / 2 : undefined;
-            allMatches.push({
-              cameraName: cam.name,
-              boloId: m.boloId,
-              confidence: m.confidence || 0.5,
-              details: m.details || "Visual match",
-              bbox,
-              cx,
-              cy,
-            });
-          }
+      // Strip markdown code fences if present (OpenAI sometimes wraps JSON in ```json ... ```)
+      const cleaned = text.replace(/```json\s*/g, "").replace(/```\s*/g, "");
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        console.log(`[BOLO] ${cam.name} no JSON in response`);
+        continue;
+      }
+
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (parsed.matches && parsed.matches.length > 0) {
+        for (const m of parsed.matches) {
+          const bbox = normalizeBboxValues(m.bbox);
+          const cx = typeof m.cx === "number" ? m.cx : bbox ? (bbox[1] + bbox[3]) / 2 : undefined;
+          const cy = typeof m.cy === "number" ? m.cy : bbox ? (bbox[0] + bbox[2]) / 2 : undefined;
+          allMatches.push({
+            cameraName: cam.name,
+            boloId: m.boloId || "",
+            confidence: m.confidence || 0.5,
+            details: m.details || "Visual match",
+            bbox,
+            cx,
+            cy,
+          });
+          console.log(`[BOLO] *** MATCH *** ${cam.name}: ${m.boloId} conf=${m.confidence} details="${m.details}"`);
         }
+      } else {
+        console.log(`[BOLO] ${cam.name} no matches found`);
       }
     } catch (e: unknown) {
-      console.warn(`[BOLO] ${cam.name} scan failed:`, getErrorMessage(e));
+      const msg = getErrorMessage(e);
+      if (msg.includes("429") || msg.includes("rate")) {
+        console.log(`[BOLO] Rate limited — pausing scan cycle`);
+        break; // Stop this cycle, will resume next tick
+      }
+      console.warn(`[BOLO] ${cam.name} scan failed:`, msg.slice(0, 150));
     }
   }
 

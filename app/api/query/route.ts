@@ -7,12 +7,11 @@ import { sseBroker } from "@/lib/sse";
 
 export const dynamic = "force-dynamic";
 
-// NVIDIA Nemotron via OpenAI-compatible NIM API — Nemo's reasoning brain
-const nvidiaClient = new OpenAI({
-  baseURL: "https://integrate.api.nvidia.com/v1",
-  apiKey: process.env.NVIDIA_API_KEY || "",
+// OpenAI — Nemo's reasoning brain
+const openaiClient = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY || "",
 });
-const NEMOTRON_MODEL = process.env.NEMOTRON_TEXT_MODEL || "nvidia/llama-3.1-nemotron-70b-instruct";
+const OPENAI_MODEL = process.env.OPENAI_TEXT_MODEL || "gpt-4o";
 
 type ThreatLevel = "low" | "moderate" | "elevated" | "high" | "critical";
 
@@ -162,7 +161,7 @@ export async function POST(request: Request) {
     return NextResponse.json(buildBoloResult(trimmedQuery));
   }
 
-  // ── Nemotron reasoning: Nemo agent processes the query ──
+  // ── OpenAI reasoning: Nemo agent processes the query ──
 
   const hypotheses = store.getActiveHypotheses();
   const activeBolos = store.getActiveBolos();
@@ -230,8 +229,8 @@ export async function POST(request: Request) {
   ].join("\n");
 
   try {
-    const response = await nvidiaClient.chat.completions.create({
-      model: NEMOTRON_MODEL,
+    const response = await openaiClient.chat.completions.create({
+      model: OPENAI_MODEL,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userMessage },
@@ -246,7 +245,7 @@ export async function POST(request: Request) {
       return NextResponse.json(parsed);
     }
   } catch (error) {
-    console.error("[Nemo] Nemotron query error:", error);
+    console.error("[Nemo] OpenAI query error:", error);
   }
 
   return NextResponse.json(fallbackResult("Nemo could not process that request from the current operational data. Try rephrasing or use /help for available commands."));

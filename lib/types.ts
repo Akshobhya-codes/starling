@@ -124,7 +124,7 @@ export interface Bolo {
   plate?: string;
   direction?: string;
   lastKnownLocation?: string;
-  status: "active" | "candidate" | "confirmed" | "sighted" | "cleared";
+  status: "active" | "candidate" | "confirmed" | "sighted" | "cleared" | "paused";
   createdAt: string;
   constraints?: BoloConstraints;
   latestScore?: number;

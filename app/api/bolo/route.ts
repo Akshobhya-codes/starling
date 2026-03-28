@@ -51,7 +51,7 @@ export async function PATCH(request: Request) {
   if (!bolo) {
     return NextResponse.json({ error: "BOLO not found" }, { status: 404 });
   }
-  if (!["candidate", "active", "confirmed", "cleared"].includes(status)) {
+  if (!["candidate", "active", "confirmed", "cleared", "paused", "sighted"].includes(status)) {
     return NextResponse.json({ error: "Invalid status" }, { status: 400 });
   }
 

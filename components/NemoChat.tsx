@@ -84,7 +84,7 @@ export default function NemoChat({ onFlyTo, onHighlight, onFilterType, onBoloCre
     {
       id: "welcome",
       role: "nemo",
-      content: "Nemo online. Starling Operations Center active.\n\nI'm your AI operations analyst powered by NVIDIA Nemotron. I can track vehicles, analyze incidents, scan camera feeds, and provide tactical intelligence.\n\nType a command or ask me anything. Use /help for available commands.",
+      content: "Nemo online. Starling Operations Center active.\n\nI'm your AI operations analyst powered by OpenAI. I can track vehicles, analyze incidents, scan camera feeds, and provide tactical intelligence.\n\nType a command or ask me anything. Use /help for available commands.",
       threatLevel: "low",
       recommendations: [],
       timestamp: new Date(),
@@ -163,7 +163,7 @@ export default function NemoChat({ onFlyTo, onHighlight, onFilterType, onBoloCre
         </div>
         <div className="ml-auto flex items-center gap-1.5">
           <Zap size={9} className="text-amber-400/50" />
-          <span className="text-[8px] font-mono tracking-wider text-white/20">NEMOTRON</span>
+          <span className="text-[8px] font-mono tracking-wider text-white/20">GPT-4o</span>
         </div>
       </div>
 
@@ -271,7 +271,7 @@ export default function NemoChat({ onFlyTo, onHighlight, onFilterType, onBoloCre
             /help for commands · /bolo to track vehicles · /status for overview
           </span>
           <span className="text-[7px] font-mono text-white/10">
-            Powered by NVIDIA Nemotron
+            Powered by OpenAI
           </span>
         </div>
       </div>

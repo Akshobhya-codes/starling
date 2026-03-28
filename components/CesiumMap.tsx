@@ -461,13 +461,13 @@ export default function CesiumMap({
         const lat = pts[si][1] + (pts[si + 1][1] - pts[si][1]) * st;
 
         const entity = viewer.entities.add({
-          position: Cesium.Cartesian3.fromDegrees(lng, lat, 2),
+          position: Cesium.Cartesian3.fromDegrees(lng, lat, 0),
           point: {
-            pixelSize: 10,
+            pixelSize: 7,
             color: YELLOW,
             outlineColor: GLOW,
-            outlineWidth: 5,
-            heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
+            outlineWidth: 3,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
             disableDepthTestDistance: Number.POSITIVE_INFINITY,
           },
         });
@@ -498,22 +498,24 @@ export default function CesiumMap({
       for (const p of particles) {
         const road = validRoads[p.roadIdx];
         if (!road) continue;
-        // Use live road speed instead of cached p.speed
-        const speed = road.currentSpeed ?? p.speed;
+        // Use live road speed instead of cached p.speed, cap at realistic values
+        const speed = Math.min(road.currentSpeed ?? p.speed, 65); // max 65 mph
         const roadLen = roadLengths[p.roadIdx];
-        // Normalize t increment by road length so all vehicles move at correct visual speed
-        p.t += (speed / 3600 * dt) / roadLen;
-        // When vehicle reaches end of road, reassign to a new random position
+        // Slow down visual speed by 3x so dots look like real cars not helicopters
+        const visualSpeedFactor = 0.33;
+        p.t += (speed / 3600 * dt * visualSpeedFactor) / roadLen;
+        // When vehicle reaches end of road, reassign to a new random road
         if (p.t >= 1.0) {
           p.roadIdx = Math.floor(Math.random() * validRoads.length);
-          p.t = Math.random() * 0.1; // enter near start of new road
+          p.t = Math.random() * 0.05;
         }
         const pts = validRoads[p.roadIdx].polyline;
-        const si = Math.min(Math.floor(p.t * (pts.length - 1)), pts.length - 2);
-        const st = (p.t * (pts.length - 1)) - si;
+        const segCount = pts.length - 1;
+        const si = Math.min(Math.floor(p.t * segCount), segCount - 1);
+        const st = (p.t * segCount) - si;
         const lng = pts[si][0] + (pts[si + 1][0] - pts[si][0]) * st;
         const lat = pts[si][1] + (pts[si + 1][1] - pts[si][1]) * st;
-        p.entity.position = C.Cartesian3.fromDegrees(lng, lat, 2);
+        p.entity.position = C.Cartesian3.fromDegrees(lng, lat, 0);
         count++;
         totalSpeed += speed;
       }

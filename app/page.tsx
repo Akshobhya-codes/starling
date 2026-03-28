@@ -314,7 +314,7 @@ export default function Home() {
           </h1>
           <div className="w-px h-3 bg-white/[0.08]" />
           <span className="text-[8px] font-mono tracking-wider text-white/15">
-            AI Operations Center · Powered by NVIDIA Nemotron
+            AI Operations Center · Powered by OpenAI
           </span>
         </div>
         <div className="flex items-center gap-3">

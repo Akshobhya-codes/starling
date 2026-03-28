@@ -175,6 +175,12 @@ export async function GET(request: Request) {
   const metadataPath = id ? path.join(dir, `${id}.json`) : null;
 
   try {
+    // Serve cached annotated image if it already exists (frozen proof)
+    if (annotatedPath && fs.existsSync(annotatedPath) && mode !== "raw") {
+      const cached = fs.readFileSync(annotatedPath);
+      return imageResponse(cached);
+    }
+
     if (mode === "raw" && rawPath && fs.existsSync(rawPath)) {
       const raw = fs.readFileSync(rawPath);
       return imageResponse(raw);
@@ -184,9 +190,14 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Missing url or id parameter" }, { status: 400 });
     }
 
+    // Also check for legacy {id}.jpg (no -raw suffix)
+    const legacyPath = id ? path.join(dir, `${id}.jpg`) : null;
+
     let imageBuffer: Buffer;
     if (rawPath && fs.existsSync(rawPath)) {
       imageBuffer = fs.readFileSync(rawPath);
+    } else if (legacyPath && fs.existsSync(legacyPath)) {
+      imageBuffer = fs.readFileSync(legacyPath);
     } else if (imageUrl) {
       const response = await fetch(imageUrl, { signal: AbortSignal.timeout(10000) });
       if (!response.ok) {

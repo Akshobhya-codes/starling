@@ -9,7 +9,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Starling — Nemo Operations Center",
-  description: "AI-powered crime analysis and operations platform powered by NVIDIA Nemotron",
+  description: "AI-powered crime analysis and operations platform powered by OpenAI",
 };
 
 export default function RootLayout({
